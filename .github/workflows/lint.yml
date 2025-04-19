@@ -27,4 +27,5 @@ jobs:
                 args: --timeout=10m
 
             - name: Run golagci-lint
-              run: golangci-lint run ./...
+              run: golangci-lint run --out-format=colored-line-number --timeout=10m ./...
+              
