@@ -6,8 +6,8 @@ import (
 	"log"
 	"path/filepath"
 
-	"bittorrent/internal/metainfo"
-	"bittorrent/internal/storage"
+	"github.com/BitTorrentFileSharing/bittorrent/internal/metainfo"
+	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
 )
 
 func main() {

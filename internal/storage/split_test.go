@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"bittorrent/internal/storage"
+	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
 )
 
 func TestSplitAndHash(t *testing.T) {

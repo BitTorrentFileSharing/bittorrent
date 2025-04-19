@@ -1,7 +1,7 @@
 package tests
 
 import (
-	"bittorrent/internal/metainfo"
+	"github.com/BitTorrentFileSharing/bittorrent/internal/metainfo"
 	"encoding/json"
 	"fmt"
 	"testing"
