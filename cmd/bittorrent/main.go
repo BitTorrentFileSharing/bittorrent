@@ -100,7 +100,6 @@ func runSeeder() {
 		p.SendCh <- protocol.NewHandshake(infoHash[:], peerID[:])
 		p.SendCh <- protocol.NewBitfield(bitfield)
 	}
-
 }
 
 func runLeecher() {

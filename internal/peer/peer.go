@@ -19,24 +19,24 @@ type Peer struct {
 }
 
 func New(conn net.Conn, bf storage.Bitfield, id [20]byte) *Peer {
-	p := &Peer{Conn: conn, Bitfield: bf, SendCh: make(chan protocol.Message, 16), ID: id}
-	go p.writer()
-	go p.reader()
-	return p
+	peer := &Peer{Conn: conn, Bitfield: bf, SendCh: make(chan protocol.Message, 16), ID: id}
+	go peer.writer()
+	go peer.reader()
+	return peer
 }
 
-func (p *Peer) writer() {
-	for msg := range p.SendCh {
-		if err := msg.Encode(p.Conn); err != nil {
+func (peer *Peer) writer() {
+	for msg := range peer.SendCh {
+		if err := msg.Encode(peer.Conn); err != nil {
 			log.Println("Got writer error:", err)
 			return
 		}
 	}
 }
 
-func (p *Peer) reader() {
+func (peer *Peer) reader() {
 	for {
-		msg, err := protocol.Decode(p.Conn)
+		msg, err := protocol.Decode(peer.Conn)
 		if err == io.EOF {
 			log.Println("[*] peer closed connection")
 			return
@@ -45,31 +45,31 @@ func (p *Peer) reader() {
 			return
 		}
 		log.Println("[*] Received message with data length:", len(msg.Data))
-		p.handle(msg)
+		peer.handle(msg)
 	}
 }
 
 // Handles 3 message types
-func (p *Peer) handle(m *protocol.Message) {
+func (peer *Peer) handle(m *protocol.Message) {
 	switch m.ID {
 	case protocol.MsgHandshake:
 		// Nothing to do. Already exchanged
 
 	case protocol.MsgBitfield:
-		p.Bitfield = storage.ParseBitfield(m.Data)
+		peer.Bitfield = storage.ParseBitfield(m.Data)
 
 	case protocol.MsgRequest:
-		if p.Pieces == nil {
+		if peer.Pieces == nil {
 			// Leecher ignores
 			return
 		}
 		idx := int(binary.BigEndian.Uint32(m.Data)) // 4-byte index
-		piece := p.Pieces[idx]
+		piece := peer.Pieces[idx]
 		resp := protocol.Message{
 			ID:   protocol.MsgPiece,
 			Data: append(Uint32ToBytes(uint32(idx)), piece...),
 		}
-		p.SendCh <- resp
+		peer.SendCh <- resp
 
 	case protocol.MsgPiece:
 		// idx := int(binary.BigEndian.Uint32(m.Data[:4]))
