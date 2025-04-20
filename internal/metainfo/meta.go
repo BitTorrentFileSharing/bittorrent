@@ -2,6 +2,7 @@ package metainfo
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 )
 
@@ -18,7 +19,10 @@ func (m *Meta) Write(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+	return nil;
 }
 
 // Parses file back into Meta
