@@ -14,6 +14,7 @@ const (
 	MsgBitfield
 	MsgRequest
 	MsgPiece
+	MsgHave
 )
 
 // Handshake payload:

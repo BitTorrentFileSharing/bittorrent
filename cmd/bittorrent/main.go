@@ -15,10 +15,11 @@ import (
 )
 
 var (
-	seed  = flag.String("seed", "", "Path to original file to seed")
-	get   = flag.String("get", "", "Path to .bit metadata to download")
-	addr  = flag.String("addr", ":6881", "listen address")
-	peerL = flag.String("peer", "", "comma-separated list of peers to dial (host:port)")
+	seed     = flag.String("seed", "", "Path to original file to seed")
+	get      = flag.String("get", "", "Path to .bit metadata to download")
+	addr     = flag.String("addr", ":6881", "listen address")
+	peerList = flag.String("peer", "", "comma-separated list of peers to dial (host:port)")
+	dest     = flag.String("dest", ".", "Destination folder for download file (leecher)")
 )
 
 func main() {
@@ -102,40 +103,96 @@ func runSeeder() {
 	}
 }
 
+// Downloads ALL pieces from one peer (the seeder)
+// and writes final payload next to the .bit file when finished
 func runLeecher() {
-	// Load data
-	meta, err := metainfo.Load(*get) // --get ~/file.bit
+	// 1. Load metadata (.bit file)
+	meta, err := metainfo.Load(*get) // --get movie.bin.bit
 	if err != nil {
 		log.Fatalf("[!] failed to load metadata file %q: %v", *get, err)
 	}
-	log.Println("[+] Successfully loaded meta")
+	log.Println("[+] meta loaded: pieces =", len(meta.Hashes))
 
-	bitfield := storage.NewBitfield(len(meta.Hashes)) // all zeroes
+	// 2. Dial the seeder (single peer right now)
+	conn, err := net.Dial("tcp", *peerList) // --peer localhost:6881
+	if err != nil {
+		log.Fatalf("[!] dial %s: %v", *peerList, err)
+	}
+	log.Println("[+] TCP connected to", *peerList)
+
+	// 3. Local bitfield = all zero (we own nothing yet)
+	bitfield := storage.NewBitfield(len(meta.Hashes))
 	peerID := protocol.RandomPeerID()
 
-	conn, err := net.Dial("tcp", *peerL) // pass --p localhost:6881
-	if err != nil {
-		log.Fatalln("Error while establishing connection:", err)
-	}
+	// 4. Create peer object
+	newPeer := peer.New(conn, bitfield, peerID)
+	newPeer.Meta = meta
+	newPeer.Pieces = make([][]byte, len(meta.Hashes)) // download buffer
 
-	p := peer.New(conn, bitfield, peerID)
-	expected := meta.Hashes // TODO: pass this into peer to verify
-	log.Println("[+] Successfully established connection")
-
+	// PROCEED WITH HANDSHAKE + BITFIELD
 	infoHash, _ := protocol.InfoHash(*get)
-	p.SendCh <- protocol.NewHandshake(infoHash[:], peerID[:])
-	p.SendCh <- protocol.NewBitfield(bitfield)
-	log.Println("[+] Successfully sent handshake and bitfield")
+	newPeer.SendCh <- protocol.NewHandshake(infoHash[:], peerID[:])
+	newPeer.SendCh <- protocol.NewBitfield(bitfield)
+	log.Println("[+] handshake + empty bitfield sent")
 
-	// ONLY 1 PIECE FOR FUN TODO: ADD MORE
-	req := protocol.Message{
-		ID:   protocol.MsgRequest,
-		Data: peer.Uint32ToBytes(0),
+	// 5. Piece-picker state
+	missing := make([]bool, len(meta.Hashes)) // true -> need piece
+	pickerQuit := make(chan struct{})
+	for i := range missing {
+		missing[i] = true
 	}
-	p.SendCh <- req
-	log.Println("[*] Requested 1 chunk of data")
 
-	// Wait a bit then exit (TODO: improve))
-	time.Sleep(3 * time.Second)
-	_ = expected // TODO: do some
+	// Helper: request next missing piece sequentially
+	// sends MsgRequest. Seeder responds with MsgPiece
+	requestNext := func() {
+		for idx, need := range missing {
+			if need {
+				req := protocol.Message{
+					ID: protocol.MsgRequest,
+					Data: append(util.Uint32ToBytes(uint32(idx)), // piece index
+						util.Uint32ToBytes(0)...), // offset = 0 (always?)
+				}
+				newPeer.SendCh <- req
+				log.Printf("[*] requested piece %d", idx)
+				return
+			}
+		}
+	}
+
+	// 6. Define HOOK
+	// This hook marks pieces done, logs,
+	// either requestsNext() or completes.
+	newPeer.OnHave = func(idx int) {
+		missing[idx] = false
+
+		// Progress log
+		done, total := 0, len(missing)
+		for _, need := range missing {
+			if !need {
+				done++
+			}
+		}
+		log.Printf("[+] have piece %d (%d/%d)", idx, done, total)
+
+		// Completed torrent?
+		if done == total {
+			log.Println("[*] all pieces verified, writing final file ...")
+			out := filepath.Join(*dest, meta.FileName)
+			if err := storage.Join(newPeer.Pieces, out); err != nil {
+				log.Fatal("[!] join:", err)
+			}
+			log.Println("[*] File written!", out)
+			close(pickerQuit)
+			return
+		}
+		// Otherwise ask for the next missing piece
+		requestNext()
+	}
+
+	// 7. Start the initial request (piece 0), then let callback drive flow
+	requestNext()
+
+	// 8. Block until torrent finished
+	<-pickerQuit
+	time.Sleep(500 * time.Microsecond) // For final logs
 }
