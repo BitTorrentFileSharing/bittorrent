@@ -5,8 +5,11 @@ import (
 	"log"
 	"net"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/BitTorrentFileSharing/bittorrent/internal/logger"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/metainfo"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/peer"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/protocol"
@@ -18,7 +21,7 @@ var (
 	seed     = flag.String("seed", "", "Path to original file to seed")
 	get      = flag.String("get", "", "Path to .bit metadata to download")
 	addr     = flag.String("addr", ":6881", "listen address")
-	peerList = flag.String("peer", "", "comma-separated list of peers to dial (host:port)")
+	peerList = flag.String("peer", "", "comma-separated peers (host:port,host2:port2)")
 	dest     = flag.String("dest", ".", "Destination folder for download file (leecher)")
 )
 
@@ -84,12 +87,13 @@ func runSeeder() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("Seeder listening on:", *addr)
+	log.Println("[*] Seeder listening on:", *addr)
 
 	infoHash, _ := protocol.InfoHash(metaPath) // 20-byte SHA-1
 
 	for {
 		conn, err := ln.Accept()
+		log.Println("[*] New connection:", conn.RemoteAddr().String())
 		if err != nil {
 			log.Println("[!] accept error:", err)
 			continue
@@ -103,96 +107,233 @@ func runSeeder() {
 	}
 }
 
-// Downloads ALL pieces from one peer (the seeder)
-// and writes final payload next to the .bit file when finished
+// Does many things...
 func runLeecher() {
-	// 1. Load metadata (.bit file)
-	meta, err := metainfo.Load(*get) // --get movie.bin.bit
+	// 0. Load metadata (.bit file)
+	meta, err := metainfo.Load(*get)
 	if err != nil {
 		log.Fatalf("[!] failed to load metadata file %q: %v", *get, err)
 	}
-	log.Println("[+] meta loaded: pieces =", len(meta.Hashes))
+	log.Printf("[+] meta ok - %d pieces, pieceSize=%d",
+		len(meta.Hashes), meta.PieceSize)
 
-	// 2. Dial the seeder (single peer right now)
-	conn, err := net.Dial("tcp", *peerList) // --peer localhost:6881
-	if err != nil {
-		log.Fatalf("[!] dial %s: %v", *peerList, err)
-	}
-	log.Println("[+] TCP connected to", *peerList)
-
-	// 3. Local bitfield = all zero (we own nothing yet)
-	bitfield := storage.NewBitfield(len(meta.Hashes))
-	peerID := protocol.RandomPeerID()
-
-	// 4. Create peer object
-	newPeer := peer.New(conn, bitfield, peerID)
-	newPeer.Meta = meta
-	newPeer.Pieces = make([][]byte, len(meta.Hashes)) // download buffer
-
-	// PROCEED WITH HANDSHAKE + BITFIELD
-	infoHash, _ := protocol.InfoHash(*get)
-	newPeer.SendCh <- protocol.NewHandshake(infoHash[:], peerID[:])
-	newPeer.SendCh <- protocol.NewBitfield(bitfield)
-	log.Println("[+] handshake + empty bitfield sent")
-
-	// 5. Piece-picker state
-	missing := make([]bool, len(meta.Hashes)) // true -> need piece
-	pickerQuit := make(chan struct{})
+	// 1. Local State shared by ALL connections
+	bitfield := storage.NewBitfield(len(meta.Hashes)) // zeroes since we own nothing
+	pieces := make([][]byte, len(meta.Hashes))        // download buffer
+	availability := make([]int, len(meta.Hashes))     // how many peers have each piece
+	missing := make([]bool, len(meta.Hashes))         // True=Need it
 	for i := range missing {
 		missing[i] = true
 	}
 
-	// Helper: request next missing piece sequentially
-	// sends MsgRequest. Seeder responds with MsgPiece
-	requestNext := func() {
-		for idx, need := range missing {
-			if need {
-				req := protocol.Message{
-					ID: protocol.MsgRequest,
-					Data: append(util.Uint32ToBytes(uint32(idx)), // piece index
-						util.Uint32ToBytes(0)...), // offset = 0 (always?)
+	var (
+		peers   []*peer.Peer
+		peersMu sync.Mutex
+	)
+
+	// 2. Helper functions
+	// Counts how many peers own the following piece
+	updateAvailability := func() {
+		for i := range availability {
+			availability[i] = 0
+		}
+		peersMu.Lock()
+		// log.Println("[?] UpdAv: Update availability mask...")
+		for _, p := range peers {
+			// log.Printf("[?] UpdAv: Checking what owns Peer %d (%s)", num, p.Conn.RemoteAddr().String())
+			for i := range availability {
+				if p.Bitfield.Has(i) {
+					availability[i]++
+					// log.Printf("[?] UpdAv: Peer %d has %d piece (%s)", num, i, p.Conn.RemoteAddr().String())
 				}
-				newPeer.SendCh <- req
-				log.Printf("[*] requested piece %d", idx)
-				return
 			}
+		}
+		// log.Println("[?] UpdAv: Finished updating availability mask.")
+		peersMu.Unlock()
+	}
+
+	// Finds a target peer that has a piece
+	// and then asks him to send this piece
+	requestPiece := func(idx int) {
+		log.Printf("[?] ReqP: Requesting %d piece...", idx)
+		peersMu.Lock()
+		var target *peer.Peer
+		for _, p := range peers {
+			if p.Bitfield.Has(idx) {
+				target = p
+				log.Printf("[?] ReqP: Found peer with asked piece %s", target.Conn.RemoteAddr().String())
+				break
+			}
+		}
+		peersMu.Unlock()
+		if target == nil {
+			// Nobody owns it yet
+			log.Printf("[?] ReqP: Did not found satisfying peers. Leaving.")
+			return
+		}
+		requestMsg := protocol.Message{
+			ID: protocol.MsgRequest,
+			Data: append(util.Uint32ToBytes(uint32(idx)),
+				util.Uint32ToBytes(0)...), // offset 0
+		}
+		target.SendCh <- requestMsg
+		logger.Log(
+			"request",
+			map[string]any{
+				"pieceIndex": idx,
+				"targetPeer": target.Conn.RemoteAddr().String()})
+	}
+
+	// Updates pieces availability by going through all peers
+	// and requests rarest piece from them.
+	pickAndRequestNext := func() {
+		// Count piece references amount
+		updateAvailability()
+		log.Printf("[?] PickNReq: Started searching rarest piece.")
+		best := -1
+		for i, need := range missing {
+			if !need {
+				continue
+			}
+			if best == -1 || availability[i] < availability[best] {
+				best = i
+			}
+		}
+		if best != -1 {
+			// log.Printf("[?] PickNReq: Requesting rarest piece %d", best)
+			requestPiece(best)
+		} else {
+			// log.Printf("[?] PickNReq: No need to request any pieces. Already done")
 		}
 	}
 
-	// 6. Define HOOK
-	// This hook marks pieces done, logs,
-	// either requestsNext() or completes.
-	newPeer.OnHave = func(idx int) {
+	pickerQuit := make(chan struct{}) // For blocking functional
+	
+	// Callback for peer
+	onPieceDone := func(idx int) {
+		// Piece not missing no more
 		missing[idx] = false
 
-		// Progress log
-		done, total := 0, len(missing)
+		// broadcast haveMsg to every other peer
+		haveMsg := protocol.Message{
+			ID:   protocol.MsgHave,
+			Data: util.Uint32ToBytes(uint32(idx)),
+		}
+		peersMu.Lock()
+		for _, p := range peers {
+			// Skip if they already have it
+			if !p.Bitfield.Has(idx) {
+				p.SendCh <- haveMsg
+			}
+		}
+		peersMu.Unlock()
+
+		// Existing progress / completion logic below
+		// Log done pieces
+		done := 0
 		for _, need := range missing {
 			if !need {
 				done++
 			}
 		}
-		log.Printf("[+] have piece %d (%d/%d)", idx, done, total)
+		logger.Log(
+			"have",
+			map[string]any{"pieceIndex": idx, "doneAmount": done})
 
-		// Completed torrent?
-		if done == total {
-			log.Println("[*] all pieces verified, writing final file ...")
-			out := filepath.Join(*dest, meta.FileName)
-			if err := storage.Join(newPeer.Pieces, out); err != nil {
-				log.Fatal("[!] join:", err)
+		// Finished? Leave
+		if done == len(missing) {
+			outPath := filepath.Join(*dest, meta.FileName)
+			if err := storage.Join(pieces, outPath); err != nil {
+				log.Fatal(err)
 			}
-			log.Println("[*] File written!", out)
+			logger.Log(
+				"complete",
+				map[string]any{"file": outPath})
 			close(pickerQuit)
 			return
 		}
-		// Otherwise ask for the next missing piece
-		requestNext()
+		// Request next to continue the flow of downloading
+		log.Printf("[*] NEXT PNREQ IN FLOW")
+		pickAndRequestNext()
 	}
 
-	// 7. Start the initial request (piece 0), then let callback drive flow
-	requestNext()
+	// 3. Dial with every peer in -peer list
+	infoHash, _ := protocol.InfoHash(*get)
 
-	// 8. Block until torrent finished
+	for addr := range strings.SplitSeq(*peerList, ",") {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
+
+		go func(remote string) {
+			conn, err := net.Dial("tcp", remote)
+			if err != nil {
+				log.Fatalf("[!] dial %s: %v", remote, err)
+				return
+			}
+			logger.Log("join", map[string]any{"peer": remote})
+
+			p := peer.New(conn, bitfield, protocol.RandomPeerID())
+			p.Meta = meta
+			p.Pieces = pieces // Share same buffer!
+
+			// Link piece-done callback and leave detection
+			p.OnHave = func(idx int) {
+				if idx == -1 { // Peer closed
+					logger.Log(
+						"leave",
+						map[string]any{"peer": remote},
+					)
+					return
+				}
+				onPieceDone(idx)
+			}
+
+			// Handshake + empty bitfield
+			p.SendCh <- protocol.NewHandshake(infoHash[:], p.ID[:])
+			logger.Log(
+				"handShake",
+				map[string]any{},
+			)
+
+			p.SendCh <- protocol.NewBitfield(bitfield)
+			logger.Log(
+				"newBitfield",
+				map[string]any{},
+			)
+
+			// Remember that peer
+			peersMu.Lock()
+			peers = append(peers, p)
+			peersMu.Unlock()
+
+			// After join, try to request something it has
+			log.Printf("[*] REQ AFTER JOINING")
+			pickAndRequestNext()
+		}(addr)
+	}
+
+	// 4. Background ticker: re-issue rarest-first every 2s
+	go func() {
+		tk := time.NewTicker(2 * time.Second)
+		defer tk.Stop()
+		for {
+			select {
+			case <-pickerQuit:
+				return
+			case <-tk.C:
+				log.Printf("[*] TICKER MADE PnReq")
+				pickAndRequestNext()
+			}
+		}
+	}()
+
+	// 5. Start by requesting something right away
+	log.Printf("[*] FIRST PNREQ")
+	pickAndRequestNext()
+
+	// 6. Block until torrent finished
 	<-pickerQuit
-	time.Sleep(500 * time.Microsecond) // For final logs
+	time.Sleep(300 * time.Millisecond) // For final logs
 }

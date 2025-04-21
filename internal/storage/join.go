@@ -2,12 +2,15 @@ package storage
 
 import (
 	"os"
+	"path/filepath"
 )
 
-// Writes pieces into file
+// Writes multiple pieces of bytes into file
 func Join(pieces [][]byte, path string) error {
-	file, err := os.Create(path)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	file, err := os.Create(path); if err != nil {
 		return err
 	}
 	defer file.Close()

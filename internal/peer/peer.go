@@ -30,6 +30,7 @@ func New(conn net.Conn, bf storage.Bitfield, id [20]byte) *Peer {
 	return peer
 }
 
+// Writes messages into connection
 func (peer *Peer) writer() {
 	for msg := range peer.SendCh {
 		if err := msg.Encode(peer.Conn); err != nil {
@@ -39,7 +40,15 @@ func (peer *Peer) writer() {
 	}
 }
 
+// Reads messages from connection
 func (peer *Peer) reader() {
+	// Leaving callback
+	defer func() {
+		if peer.OnHave != nil {
+			peer.OnHave(-1)
+		}
+	}()
+
 	for {
 		msg, err := protocol.Decode(peer.Conn)
 		if err == io.EOF {
@@ -49,12 +58,11 @@ func (peer *Peer) reader() {
 			log.Println("[!] decode error in reader:", err)
 			return
 		}
-		log.Println("[+] Received message, len:", len(msg.Data))
+		// log.Println("[+] Received message, len:", len(msg.Data))
 		peer.handle(msg)
 	}
 }
 
-// Handles 3 message types
 // TODO: Write doc for each case
 func (peer *Peer) handle(message *protocol.Message) {
 	switch message.ID {
@@ -110,23 +118,28 @@ func (peer *Peer) handle(message *protocol.Message) {
 		// n bytes actual data
 		idx := int(binary.BigEndian.Uint32(message.Data[:4]))
 		data := message.Data[8:] // We skip index+offset
+
 		// Verify Hash
 		if sha1.Sum(data) != util.Sha1Sum(peer.Meta.Hashes[idx]) {
 			log.Printf("Bad hash for piece %d\n", idx)
 			return
 		}
+
 		peer.Pieces[idx] = data
 		peer.Bitfield.Set(idx)
-		// Create MsgHave
-		have := protocol.Message{
+
+		// 1. Notify uploader immediately
+		haveMsg := protocol.Message{
 			ID:   protocol.MsgHave,
 			Data: util.Uint32ToBytes(uint32(idx)),
 		}
-		// Send it to other peers
-		peer.SendCh <- have
-		// Run Callback
+		// Goes to uploader via same conn
+		peer.SendCh <- haveMsg
+
+		// 2. Then inform piece-picker layer
 		if peer.OnHave != nil {
-			peer.OnHave(idx)
+			peer.OnHave(idx) // Upper-layer will fan this out to others
 		}
+
 	}
 }
