@@ -4,7 +4,8 @@ package storage
 // Just a bunch of bytes
 type Bitfield []byte // len == numPieces
 
-// Returns new bitfield sized n bytes
+// Returns new bitfield sized n bytes.
+// Bitfield corresponds to piece ownership fact
 func NewBitfield(n int) Bitfield { return make([]byte, n) }
 
 // Asks i-th == 1?

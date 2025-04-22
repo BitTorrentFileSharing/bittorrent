@@ -7,6 +7,7 @@ import (
 	"math/rand"
 
 	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
+	"github.com/BitTorrentFileSharing/bittorrent/internal/util"
 )
 
 const (
@@ -18,8 +19,9 @@ const (
 )
 
 // Handshake payload:
-//   20‑byte infoHash  – SHA‑1(torrent metadata)
-//   20‑byte peerID    – random ASCII string
+//
+//	20‑byte infoHash  – SHA‑1(torrent metadata)
+//	20‑byte peerID    – random ASCII string
 //
 // length = 1 (ID) + 20 + 20 = 41
 const HandshakeLen = 1 + 20 + 20
@@ -37,12 +39,42 @@ func NewBitfield(bf storage.Bitfield) Message {
 	return Message{ID: MsgBitfield, Data: bf.Bytes()}
 }
 
+func NewRequest(idx int) Message {
+	return Message{
+		ID: MsgRequest,
+		Data: append(
+			util.Uint32ToBytes(uint32(idx)),
+			util.Uint32ToBytes(0)..., // Offset is 0
+		),
+	}
+}
+
+func NewPiece(idx int, piece []byte) Message {
+	return Message{
+		ID: MsgPiece,
+		Data: append(
+			append(
+				util.Uint32ToBytes(uint32(idx)),
+				util.Uint32ToBytes(0)..., // Offset is 0
+			),
+			piece...,
+		),
+	}
+}
+
+func NewHave(idx int) Message {
+	return Message{
+		ID: MsgHave,
+		Data: util.Uint32ToBytes(uint32(idx)),
+	}
+}
+
 // Forms TCP-packet
 func (m *Message) Encode(pipe io.Writer) error {
 	// 1. Write prefix which tells length of message.
 	// 1-byte for ID. N-byte for Data
 	if err := binary.Write(pipe, binary.BigEndian, uint32(1+len(m.Data))); err != nil {
-		return err;
+		return err
 	}
 	// 2. writes type of msg (1-byte ID). See translation above
 	if err := binary.Write(pipe, binary.BigEndian, m.ID); err != nil {

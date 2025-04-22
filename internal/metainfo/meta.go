@@ -13,7 +13,7 @@ type Meta struct {
 	Hashes     [][]byte `json:"hashes"` // SHA-1 for each piece
 }
 
-// Saves the struct as a pretty JSON
+// Saves the struct as JSON on path file
 func (m *Meta) Write(path string) error {
 	b, err := json.MarshalIndent(m, "", " ")
 	if err != nil {

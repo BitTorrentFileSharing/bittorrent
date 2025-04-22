@@ -52,7 +52,7 @@ func (peer *Peer) reader() {
 	for {
 		msg, err := protocol.Decode(peer.Conn)
 		if err == io.EOF {
-			log.Println("[*] peer closed connection")
+			log.Printf("[*] peer %s closed connection", peer.Conn.RemoteAddr().String())
 			return
 		} else if err != nil {
 			log.Println("[!] decode error in reader:", err)
@@ -89,17 +89,9 @@ func (peer *Peer) handle(message *protocol.Message) {
 			// Leecher ignores
 			return
 		}
-		idx := int(binary.BigEndian.Uint32(message.Data[:4])) // 4-byte index
+		idx := int(binary.BigEndian.Uint32(message.Data)) // 4-byte index
 		piece := peer.Pieces[idx]
-		resp := protocol.Message{
-			ID: protocol.MsgPiece,
-			// Might change data later
-			Data: append(
-				append(
-					util.Uint32ToBytes(uint32(idx)),
-					util.Uint32ToBytes(0)...),
-				piece...),
-		}
+		resp := protocol.NewPiece(idx, piece)
 		peer.SendCh <- resp
 
 	case protocol.MsgHave:
