@@ -41,6 +41,7 @@ func NewSwarm(sess *Session, destDir string, keep int) *Swarm {
 	}
 	return &Swarm{
 		Sess:         sess,
+		mu: sync.Mutex{},
 		missing:      miss,
 		availability: make([]int, n),
 		ticker:       time.NewTicker(tickerPeriod),
@@ -51,7 +52,7 @@ func NewSwarm(sess *Session, destDir string, keep int) *Swarm {
 
 // Dial CSV peers and attach to Swarm
 func (sw *Swarm) Dial(csv string) {
-	infoHash, _ := protocol.InfoHash(sw.Sess.Meta.FileName + "bit")
+	infoHash, _ := protocol.InfoHash(sw.Sess.Meta.FileName + ".bit")
 	for addr := range strings.SplitSeq(csv, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -67,7 +68,7 @@ func (sw *Swarm) Dial(csv string) {
 				)
 				return
 			}
-			logger.Log("join", map[string]any{"peer": a})
+			logger.Log("joined_to_peer", map[string]any{"peer": a})
 
 			p := peer.New(conn, sw.Sess.BF, protocol.RandomPeerID())
 			p.Meta = sw.Sess.Meta
@@ -146,6 +147,10 @@ func (sw *Swarm) onHave(src *peer.Peer, idx int) {
 func (sw *Swarm) Loop() {
 	for range sw.ticker.C {
 		idx := sw.choosePiece()
+		// logger.Log(
+		// 	"request",
+		// 	map[string]any{"peers": len(sw.Peers)},
+		// )
 		if idx == -1 {
 			continue
 		}

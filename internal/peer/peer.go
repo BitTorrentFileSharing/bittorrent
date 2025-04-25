@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 
+	"github.com/BitTorrentFileSharing/bittorrent/internal/logger"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/metainfo"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/protocol"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
@@ -52,10 +53,16 @@ func (peer *Peer) reader() {
 	for {
 		msg, err := protocol.Decode(peer.Conn)
 		if err == io.EOF {
-			log.Printf("[*] peer %s closed connection", peer.Conn.RemoteAddr().String())
+			logger.Log(
+				"bye_leecher",
+				map[string]any{"bye": peer.Conn.RemoteAddr().String()},
+			)
 			return
 		} else if err != nil {
-			log.Println("[!] decode error in reader:", err)
+			logger.Log(
+				"decode_err",
+				map[string]any{"err": err.Error()},
+			)
 			return
 		}
 		// log.Println("[+] Received message, len:", len(msg.Data))
