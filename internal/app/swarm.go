@@ -2,7 +2,6 @@ package app
 
 import (
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +27,8 @@ type Swarm struct {
 	// Specific for each leecher
 	destDir string
 	keepSec int
+
+	isDone chan bool
 }
 
 const tickerPeriod = time.Duration(2 * time.Second)
@@ -41,9 +42,10 @@ func NewSwarm(sess *Session, destDir string, keep int) *Swarm {
 	}
 	return &Swarm{
 		Sess:         sess,
-		mu: sync.Mutex{},
+		mu:           sync.Mutex{},
 		missing:      miss,
 		availability: make([]int, n),
+		isDone:       make(chan bool, 1),
 		ticker:       time.NewTicker(tickerPeriod),
 		destDir:      destDir,
 		keepSec:      keep,
@@ -98,6 +100,7 @@ func (sw *Swarm) onHave(src *peer.Peer, idx int) {
 
 	// Mark done
 	sw.missing[idx] = false
+	sw.Sess.BF.Set(idx)
 
 	// Check if load is complete
 	done := 0
@@ -127,13 +130,7 @@ func (sw *Swarm) onHave(src *peer.Peer, idx int) {
 		} else {
 			logger.Log("complete", map[string]any{"file": outPath})
 		}
-
-		if sw.keepSec > 0 {
-			logger.Log("seeding", map[string]any{"seconds": sw.keepSec})
-			time.Sleep(time.Duration(sw.keepSec) * time.Second)
-		}
-		logger.Log("bye", nil)
-		os.Exit(0) // Stop the process
+		sw.isDone <- true
 	}
 
 	// Ask for a new piece
@@ -145,16 +142,18 @@ func (sw *Swarm) onHave(src *peer.Peer, idx int) {
 
 // Start rarest-first loop (blocking)
 func (sw *Swarm) Loop() {
-	for range sw.ticker.C {
-		idx := sw.choosePiece()
-		// logger.Log(
-		// 	"request",
-		// 	map[string]any{"peers": len(sw.Peers)},
-		// )
-		if idx == -1 {
-			continue
+	for {
+		select {
+		case <-sw.ticker.C:
+			idx := sw.choosePiece()
+			if idx == -1 {
+				continue
+			}
+			sw.request(idx)
+		case <-sw.isDone:
+			sw.ticker.Stop()
+			return
 		}
-		sw.request(idx)
 	}
 }
 

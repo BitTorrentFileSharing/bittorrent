@@ -2,7 +2,6 @@ package app
 
 import (
 	"encoding/hex"
-	"log"
 	"strings"
 
 	"github.com/BitTorrentFileSharing/bittorrent/internal/dht"
@@ -53,16 +52,22 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 	seen := map[string]struct{}{} // Just a set
 	queue := svc.Node.RoutingTable.Closest(infoHash, alpha)
 
+	// START LOGS
+	var dht_addresses []string
+	for _, dht := range queue {
+		dht_addresses = append(dht_addresses, dht.Addr.String())
+	}
+	logger.Log("leecher_peers_lookup", map[string]any{"available_dhts": dht_addresses})
+	// END LOGS
+
 	for round := 0; round < maxRounds && len(queue) > 0 && len(seen) < maxPeers; round++ {
-		log.Println("Try number", round)
-		
 		target := queue[0]
 		queue = queue[1:]
 
 		// 1. Send FIND PEERS message
 		reply := svc.Node.FindPeers(target.Addr.String(), hexedInfoHash)
 		logger.Log("dht_lookup_reply",
-			map[string]any{"from": target.Addr.String(), "peers": len(reply)})
+			map[string]any{"from": target.Addr.String(), "peers": reply})
 
 		// Add strings to map
 		for _, addr := range reply {
@@ -78,7 +83,6 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 	for peer := range seen {
 		out = append(out, peer)
 	}
-	logger.Log("dht_lookup_done", map[string]any{"total": len(out)})
 	return out
 }
 

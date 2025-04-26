@@ -2,7 +2,9 @@ package dht
 
 import (
 	"encoding/hex"
+	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"slices"
@@ -102,16 +104,23 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 			addTCP(node.Seeds, msg.Info, msg.Addr)
 		}
 
+		// LOG INFORMATION
+		// DELETE IN PRODUCTION
+		var out []string
+		for infoHash, peers := range node.Seeds {
+			out = append(out, fmt.Sprintf("%s: [%s]",
+				infoHash,
+				strings.Join(peers, ", "),
+			))
+		}
+		logger.Log("AVAILABLE_SEEDERS", map[string]any{"seeders": out})
+		// LOG END
+
 	case "findPeers":
 		list := slices.Clone(node.Seeds[msg.Info]) // known seeders
-		if ihRaw, err := hex.DecodeString(msg.Info); err == nil {
-			var ih20 [20]byte
-			copy(ih20[:], ihRaw)
-			for _, p := range node.RoutingTable.Closest(ih20, 30) { // extra nodes
-				list = append(list, p.Addr.String())
-			}
-		}
 		list = dedup(list)
+		logger.Log("Answer to findPeers", map[string]any{"seeders": list})
+
 		send(node.Conn, adr, Msg{
 			T: "peers", ID: hex.EncodeToString(node.ID[:]),
 			Info: msg.Info, List: list,
@@ -169,8 +178,7 @@ func (node *DHTNode) FindPeers(bootstrap string, infoHex string) []string {
 	for {
 		select {
 		case p := <-node.inboxPeer:
-			// let normal handler run first (keeps table fresh)
-			node.handle(p.msg, p.adr)
+			// Skip other messages
 			if p.msg.T == "peers" {
 				return p.msg.List
 			}

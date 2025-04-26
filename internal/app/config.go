@@ -20,7 +20,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&c.SeedPath, "seed", "", "path to payload to seed")
 	flag.StringVar(&c.MetaPath, "get", "", "path to .bit file to download")
 	flag.StringVar(&c.PeersCSV, "peer", "", "comma-separated peers")
-	flag.StringVar(&c.Listen, "addr", ":6881", "listen addr (seeder)")
+	flag.StringVar(&c.Listen, "tcp-listen", ":0", "TCP listen addr")
 	flag.StringVar(&c.DestDir, "dest", ".", "download output dir")
 	flag.StringVar(&c.DHTListen, "dht-listen", ":0", "UDP addr for DHT ('' to disable)")
 	flag.StringVar(&c.BootstrapCSV, "bootstrap", "", "comma-separated UDP bootstrap nodes")

@@ -61,7 +61,6 @@ func NewTable(self [20]byte) *Table {
 // Inserts or Refreshes peer *p* in the appropriate bucket.
 //   - Self-ID is never stored.
 func (t *Table) Update(peer Peer) {
-	// log.Println("Adding new peer in RT!", peer.ID, peer.Addr.String())
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -90,11 +89,15 @@ func (t *Table) Update(peer Peer) {
 		b.peers = b.peers[1:]
 	}
 
-	logger.Log("table_increment", map[string]any{
-		"bucket": bucketIdx,
-		"size":   len(b.peers),
-		"peer":   peer.Addr.String(),
-	})
+	// FOR LOGS: Check current peers
+	var peers []string
+	for _, bucket := range t.bucket {
+		for _, peer := range bucket.peers {
+			peers = append(peers, peer.Addr.String())
+		}
+	}
+
+	logger.Log("RT peers update", map[string]any{"peers": peers, "new_peer": peer.Addr.String(), "new_peer_bucket": bucketIdx})
 }
 
 /// Query closest
@@ -122,3 +125,14 @@ func (t *Table) Closest(target [20]byte, n int) []Peer {
 	}
 	return candidates
 }
+
+func (table *Table) CheckAddresses() []string {
+	var addresses []string
+	for _, bucket := range table.bucket {
+		for _, peer := range bucket.peers {
+			addresses = append(addresses, peer.Addr.String())
+		}
+	}
+
+	return addresses
+} 
