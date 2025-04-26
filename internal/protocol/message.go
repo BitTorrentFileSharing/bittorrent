@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"math/rand"
+	"crypto/rand"
 
 	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/util"
@@ -104,10 +104,10 @@ func Decode(r io.Reader) (*Message, error) {
 }
 
 func RandomPeerID() [20]byte {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	var b [20]byte
-	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
+	var id [20]byte
+	_, err := rand.Read(id[:])
+	if err != nil {
+		panic(err)
 	}
-	return b
+	return id
 }

@@ -97,7 +97,47 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 
 	switch msg.T {
 	case "ping":
-		send(node.Conn, adr, Msg{T: "pong", ID: hex.EncodeToString(node.ID[:])})
+		// Collect peers and send them
+		var dhtPeers []MsgPeer
+		for _, node := range node.RoutingTable.GetNPeers(5) {
+			dhtPeers = append(dhtPeers, MsgPeer{ID: hex.EncodeToString(node.ID[:]), Addr: node.Addr.String()})
+		}
+		
+		send(node.Conn, adr, Msg{
+			T: "pong",
+			ID: hex.EncodeToString(node.ID[:]),
+			DHTPeers: dhtPeers,
+		})
+
+		// LOGGER START
+		var addresses []string
+		for _, peer := range dhtPeers {
+			addresses = append(addresses, peer.Addr)
+		}
+		logger.Log("sent_ping_ponged_peers", map[string]any{"peers": addresses})
+		// LOGGER END
+
+	case "pong":
+		// take UDP nodes there
+		msgPeers := msg.DHTPeers
+		for _, msgPeer := range msgPeers {
+			udpAddr, err := net.ResolveUDPAddr("udp4", msgPeer.Addr)
+			if err != nil {
+				logger.Log("bad_address", map[string]any{"addr": msgPeer.Addr, "err": err.Error()})
+			}
+			rawID, err := hex.DecodeString(msgPeer.ID)
+			if err != nil {
+				logger.Log("bad_dht_peer", map[string]any{"err": err.Error()})
+			}
+			var id20 [20]byte
+			copy(id20[:], rawID)
+
+			peer := Peer{
+				ID: id20,
+				Addr: udpAddr,
+			}
+			node.RoutingTable.Update(peer)
+		}
 
 	case "announce":
 		if msg.Addr != "" {
@@ -123,7 +163,7 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 
 		send(node.Conn, adr, Msg{
 			T: "peers", ID: hex.EncodeToString(node.ID[:]),
-			Info: msg.Info, List: list,
+			Info: msg.Info, TcpList: list,
 		})
 	}
 
@@ -180,7 +220,7 @@ func (node *DHTNode) FindPeers(bootstrap string, infoHex string) []string {
 		case p := <-node.inboxPeer:
 			// Skip other messages
 			if p.msg.T == "peers" {
-				return p.msg.List
+				return p.msg.TcpList
 			}
 		case <-timeout:
 			logger.Log("findPeers_timeout", map[string]any{"bootstrap": bootstrap})

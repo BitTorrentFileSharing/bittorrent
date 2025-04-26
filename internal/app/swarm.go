@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math/rand"
 	"net"
 	"path/filepath"
 	"strings"
@@ -163,6 +164,7 @@ func (sw *Swarm) choosePiece() int {
 		sw.availability[i] = 0
 	}
 	sw.mu.Lock()
+	// Here available peers bitfield compared
 	for _, p := range sw.Peers {
 		for i := range sw.availability {
 			if p.Bitfield.Has(i) {
@@ -184,18 +186,27 @@ func (sw *Swarm) choosePiece() int {
 	return best
 }
 
-// Ask first peer to send piece indexed *idx*
+// Ask random peer to send piece indexed *idx*
 func (sw *Swarm) request(idx int) {
 	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	// For fun I will ask a random peer, not a first one
+	var goodPeers []*peer.Peer
 	for _, p := range sw.Peers {
 		if p.Bitfield.Has(idx) {
-			p.SendCh <- protocol.NewRequest(idx)
-			logger.Log(
-				"request",
-				map[string]any{"piece": idx, "peer": p.Conn.RemoteAddr().String()},
-			)
-			break
+			goodPeers = append(goodPeers, p)
 		}
 	}
-	sw.mu.Unlock()
+	if len(goodPeers) == 0 {
+		return // No available peers
+	}
+	randomPeerIdx := rand.Intn(len(goodPeers))
+	chosenPeer := goodPeers[randomPeerIdx]
+	
+	// Send request
+	chosenPeer.SendCh <- protocol.NewRequest(idx)
+	logger.Log(
+		"request",
+		map[string]any{"piece": idx, "peer": chosenPeer.Conn.RemoteAddr().String()},
+	)
 }

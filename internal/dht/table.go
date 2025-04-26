@@ -135,4 +135,18 @@ func (table *Table) CheckAddresses() []string {
 	}
 
 	return addresses
-} 
+}
+
+func (table *Table) GetNPeers(n int) []*Peer {
+	var peers []*Peer
+	for _, bucket := range table.bucket {
+		for _, peer := range bucket.peers {
+			if len(peers) >= n {
+				return peers
+			}
+			peers = append(peers, &peer)
+		}
+	}
+
+	return peers
+}
