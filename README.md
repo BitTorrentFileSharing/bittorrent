@@ -99,14 +99,15 @@ Pipe the output of each terminal to [`jq`](https://stedolan.github.io/jq/) for p
 
 ```mermaid
 graph TD
-	subgraph Swarm (TCP)
-		P1(Peer 1) -->|request piece| Seeder
-		P2(Peer 2) --> Seeder
-	end
-	Seeder -- have/bitfield --> P1
-	Seeder -- have/bitfield --> P2
-	Leecher -- announce/findPeers --> DHT[[DHT Service (UDP)]]
-	Seeder -- announce --> DHT
+  %% Swarm (TCP)
+  subgraph Swarm_TCP["Swarm (TCP)"]
+    P1["Peer 1"] -->|request piece| Seeder
+    P2["Peer 2"] --> Seeder
+  end
+  Seeder --|have/bitfield|--> P1
+  Seeder --|have/bitfield|--> P2
+  Leecher["Leecher"] --|announce/findPeers|--> DHT["DHT Service (UDP)"]
+  Seeder --|announce|--> DHT
 ```
 
 * **Session** orchestrates one torrent: holds `Meta`, in‑memory piece cache and spawns **DHT** + **Swarm**.
@@ -183,5 +184,5 @@ _Coding style: `go fmt ./...` + `golangci‑lint run` passes._
 
 ## License
 
-This project is licensed under the **MIT License** – see [`LICENSE`](./LICENSE) for details.
+This project is licensed under the **MIT License**
 
