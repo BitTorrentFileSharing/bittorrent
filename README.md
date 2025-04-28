@@ -114,7 +114,7 @@ graph TD
 * **Swarm** maintains active TCP peers and triggers _rarest‑first_ selection every 2 s.
 * **DHT Service** wraps a UDP node that speaks five JSON messages: `ping`, `pong`, `announce`, `findPeers`, `peers`.
 
-More design details (data structures, algorithms, diagrams) live in [`report.tex`](./report.tex) – grab the compiled PDF for the full write‑up.
+More design details (data structures, algorithms, diagrams) live in [`report.pdf`](./report/report.pdf) – grab the compiled PDF for the full write‑up.
 
 ---
 
