@@ -2,3 +2,7 @@
 .DS_STORE
 shit.md
 /leecher*
+.vscode/
+report/*
+!report/*.tex
+!report/*.pdf

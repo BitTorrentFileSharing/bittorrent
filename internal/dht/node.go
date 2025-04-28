@@ -99,7 +99,7 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 	case "ping":
 		// Collect peers and send them
 		var dhtPeers []MsgPeer
-		for _, node := range node.RoutingTable.GetNPeers(5) {
+		for _, node := range node.RoutingTable.GetNPeers(10) {
 			dhtPeers = append(dhtPeers, MsgPeer{ID: hex.EncodeToString(node.ID[:]), Addr: node.Addr.String()})
 		}
 		
@@ -145,7 +145,6 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 		}
 
 		// LOG INFORMATION
-		// DELETE IN PRODUCTION
 		var out []string
 		for infoHash, peers := range node.Seeds {
 			out = append(out, fmt.Sprintf("%s: [%s]",
@@ -158,7 +157,7 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 
 	case "findPeers":
 		list := slices.Clone(node.Seeds[msg.Info]) // known seeders
-		list = dedup(list)
+		list = deduplicate(list)
 		logger.Log("Answer to findPeers", map[string]any{"seeders": list})
 
 		send(node.Conn, adr, Msg{
@@ -166,7 +165,6 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 			Info: msg.Info, TcpList: list,
 		})
 	}
-
 }
 
 /// Public Helpers
@@ -236,7 +234,7 @@ func addTCP(store map[string][]string, ih, tcp string) {
 	store[ih] = append(store[ih], tcp)
 }
 
-func dedup(in []string) []string {
+func deduplicate(in []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))
 	for _, v := range in {

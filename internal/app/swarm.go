@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/hex"
 	"math/rand"
 	"net"
 	"path/filepath"
@@ -54,8 +55,7 @@ func NewSwarm(sess *Session, destDir string, keep int) *Swarm {
 }
 
 // Dial CSV peers and attach to Swarm
-func (sw *Swarm) Dial(csv string) {
-	infoHash, _ := protocol.InfoHash(sw.Sess.Meta.FileName + ".bit")
+func (sw *Swarm) Dial(csv string, infoHash [20]byte) {
 	for addr := range strings.SplitSeq(csv, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -73,12 +73,13 @@ func (sw *Swarm) Dial(csv string) {
 			}
 			logger.Log("joined_to_peer", map[string]any{"peer": a})
 
-			p := peer.New(conn, sw.Sess.BF, protocol.RandomPeerID())
+			p := peer.New(conn, sw.Sess.BF, protocol.RandomPeerID(), sw.Sess.InfoHash)
 			p.Meta = sw.Sess.Meta
 			p.Pieces = sw.Sess.Pieces
 
 			p.OnHave = func(idx int) { sw.onHave(p, idx) }
 
+			logger.Log("send_handshake_dial", map[string]any{"infoHash": hex.EncodeToString(infoHash[:])})
 			p.SendCh <- protocol.NewHandshake(infoHash[:], p.ID[:])
 			p.SendCh <- protocol.NewBitfield(sw.Sess.BF)
 

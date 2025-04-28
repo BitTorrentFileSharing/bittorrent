@@ -42,13 +42,13 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 	}
 
 	const (
-		alpha     = 3  // num of parallel queries (really it is num of peers)
-		maxRounds = 3  // iterative depth
+		alpha     = 10 // num of parallel queries
+		maxRounds = 10  // iterative depth
 		maxPeers  = 50 // stop early criteria
 	)
 
 	hexedInfoHash := hex.EncodeToString(infoHash[:])
-	
+
 	seen := map[string]struct{}{} // Just a set
 	queue := svc.Node.RoutingTable.Closest(infoHash, alpha)
 

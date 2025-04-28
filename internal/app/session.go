@@ -3,6 +3,7 @@
 package app
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -25,9 +26,10 @@ type Session struct {
 	Mu sync.Mutex
 
 	// Immutable Metadata
-	Meta   *metainfo.Meta
-	Pieces [][]byte         // len == number of pieces
-	BF     storage.Bitfield // which pieces we own
+	InfoHash [20]byte
+	Meta     *metainfo.Meta
+	Pieces   [][]byte         // len == number of pieces
+	BF       storage.Bitfield // which pieces we own
 
 	// subsystems
 	DHT   *DHTService // nil when -dht-listen "" was passed
@@ -38,7 +40,6 @@ type Session struct {
 }
 
 // Allocates memory buffers, starts the UDP node
-// and creates *empty* Swarm.
 //
 // It does not open any TCP connections or files yet.
 func NewSession(cfg *Config, meta *metainfo.Meta) (*Session, error) {
@@ -64,23 +65,18 @@ func NewSession(cfg *Config, meta *metainfo.Meta) (*Session, error) {
 		return nil, err
 	}
 	s.DHT = dhtSvc
-
-	// TCP layer Boost (runs only in Leecher side)
-	// if cfg.MetaPath != "" {
-	// 	s.Swarm = NewSwarm(s, cfg.DestDir, cfg.KeepSeedingSec)
-	// }
 	return s, nil
 }
 
 // Seeder path
-func (s *Session) RunSeeder() error {
-	cfg := s.cfg
+func (sess *Session) RunSeeder() error {
+	cfg := sess.cfg
 	dataPath := cfg.SeedPath
 	metaPath := dataPath + ".bit"
 
 	// Load OR create .bit file
-	if s.Meta == nil { // first run
-		if err := s.ensureMeta(dataPath, metaPath); err != nil {
+	if sess.Meta == nil { // first run
+		if err := sess.ensureMeta(dataPath, metaPath); err != nil {
 			return err
 		}
 	}
@@ -93,24 +89,23 @@ func (s *Session) RunSeeder() error {
 	}
 	for i, p := range pieces {
 		// Seeder owns everything
-		s.Pieces[i] = p
-		s.BF.Set(i)
+		sess.Pieces[i] = p
+		sess.BF.Set(i)
 	}
 
 	// UDP listener loop
-	if s.DHT != nil {
+	if sess.DHT != nil {
 		infoHash, _ := protocol.InfoHash(metaPath)
 		maxTries := 5
 		for range maxTries {
-			var addresses []string = s.DHT.Node.RoutingTable.CheckAddresses()
+			var addresses []string = sess.DHT.Node.RoutingTable.CheckAddresses()
 			if addresses == nil {
 				logger.Log("seeder did not find DHT yet... try again after 5 sec", nil)
 				time.Sleep(5 * time.Second)
 				continue
 			}
 			logger.Log("Seeder_announce", map[string]any{"dht": addresses})
-			// This is very fucking important
-			s.DHT.Announce(infoHash, cfg.Listen)
+			sess.DHT.Announce(infoHash, cfg.Listen)
 			break
 		}
 	}
@@ -118,13 +113,16 @@ func (s *Session) RunSeeder() error {
 	// TCP listener loop
 	peerID := protocol.RandomPeerID()
 	infoHash, _ := protocol.InfoHash(metaPath)
+	sess.InfoHash = infoHash
+
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
+
 	logger.Log(
 		"seeder_ready",
-		map[string]any{"file": dataPath, "tcp": cfg.Listen},
+		map[string]any{"file": dataPath, "tcp": cfg.Listen, "infoHash": hex.EncodeToString(infoHash[:])},
 	)
 	for {
 		conn, err := ln.Accept()
@@ -137,7 +135,7 @@ func (s *Session) RunSeeder() error {
 		}
 		// One goroutine per remote peer
 		go func(c net.Conn) {
-			p := newPeerAsSeeder(c, s.BF, peerID, s.Pieces, infoHash)
+			p := newPeerAsSeeder(c, sess.BF, peerID, sess.Pieces, infoHash)
 			logger.Log(
 				"new_leecher",
 				map[string]any{"peer": c.RemoteAddr().String()},
@@ -149,8 +147,8 @@ func (s *Session) RunSeeder() error {
 
 // Creates .bit file when seeding for the first time.
 // Also fills session meta-related fields if null
-func (s *Session) ensureMeta(dataPath, metaPath string) error {
-	if s.Meta != nil {
+func (sess *Session) ensureMeta(dataPath, metaPath string) error {
+	if sess.Meta != nil {
 		return nil
 	}
 	if util.Exists(metaPath) {
@@ -158,9 +156,9 @@ func (s *Session) ensureMeta(dataPath, metaPath string) error {
 		if err != nil {
 			return err
 		}
-		s.Meta = m
-		s.Pieces = make([][]byte, len(m.Hashes))
-		s.BF = storage.NewBitfield(len(m.Hashes))
+		sess.Meta = m
+		sess.Pieces = make([][]byte, len(m.Hashes))
+		sess.BF = storage.NewBitfield(len(m.Hashes))
 		return nil
 	}
 
@@ -179,11 +177,11 @@ func (s *Session) ensureMeta(dataPath, metaPath string) error {
 		return err
 	}
 	logger.Log("meta_write", map[string]any{"file": metaPath})
-	s.Meta = meta
+	sess.Meta = meta
 
 	// Also Update other fields
-	s.Pieces = make([][]byte, len(meta.Hashes))
-	s.BF = storage.NewBitfield(len(meta.Hashes))
+	sess.Pieces = make([][]byte, len(meta.Hashes))
+	sess.BF = storage.NewBitfield(len(meta.Hashes))
 
 	return nil
 }
@@ -192,8 +190,9 @@ func (s *Session) ensureMeta(dataPath, metaPath string) error {
 func newPeerAsSeeder(c net.Conn, bf storage.Bitfield, id [20]byte,
 	allPieces [][]byte, infoHash [20]byte) *peer.Peer {
 
-	p := peer.New(c, bf, id) // Spawn threads btw
+	p := peer.New(c, bf, id, infoHash) // Spawn threads btw
 	p.Pieces = allPieces
+	logger.Log("send_handshake", map[string]any{"infoHash": hex.EncodeToString(infoHash[:])})
 	p.SendCh <- protocol.NewHandshake(infoHash[:], id[:])
 	p.SendCh <- protocol.NewBitfield(bf)
 	return p
@@ -204,8 +203,8 @@ func newPeerAsSeeder(c net.Conn, bf storage.Bitfield, id [20]byte,
 //
 
 // Runs leecher. Will seed after getting a file if specified.
-func (s *Session) RunLeecher() error {
-	cfg := s.cfg
+func (sess *Session) RunLeecher() error {
+	cfg := sess.cfg
 
 	// Load .bit
 	meta, err := metainfo.Load(cfg.MetaPath)
@@ -218,20 +217,22 @@ func (s *Session) RunLeecher() error {
 	}
 
 	// Update session fields
-	s.Meta = meta
-	s.Pieces = make([][]byte, len(meta.Hashes))
-	s.BF = storage.NewBitfield(len(meta.Hashes))
+	sess.Meta = meta
+	sess.Pieces = make([][]byte, len(meta.Hashes))
+	sess.BF = storage.NewBitfield(len(meta.Hashes))
 
 	// First goal - find seeders
-	if s.DHT == nil {
+	if sess.DHT == nil {
 		return errors.New("specify dht")
 	}
-
 	infoHash, _ := protocol.InfoHash(cfg.MetaPath)
+	sess.InfoHash = infoHash
+	logger.Log("leecher", map[string]any{"desired_infoHash": hex.EncodeToString(infoHash[:])})
+
 	// Try 100 times to find seeder
 	maxTries := 100
 	for range maxTries {
-		peers := s.DHT.LookupPeers(infoHash)
+		peers := sess.DHT.LookupPeers(infoHash)
 		if len(peers) == 0 {
 			time.Sleep(5 * time.Second)
 			continue
@@ -244,9 +245,9 @@ func (s *Session) RunLeecher() error {
 	}
 
 	// TCP side
-	s.Swarm = NewSwarm(s, cfg.DestDir, cfg.KeepSeedingSec)
-	s.Swarm.Dial(cfg.PeersCSV)
-	s.Swarm.Loop() // Blocks until the file is complete
+	sess.Swarm = NewSwarm(sess, cfg.DestDir, cfg.KeepSeedingSec)
+	sess.Swarm.Dial(cfg.PeersCSV, infoHash)
+	sess.Swarm.Loop() // Blocks until the file is complete
 
 	// Starts seeding
 	// Code is similar to runSeeder there
@@ -268,7 +269,7 @@ func (s *Session) RunLeecher() error {
 				"tcp":  cfg.Listen})
 
 			// 1. Announce itself for known peers
-			s.DHT.Announce(infoHash, cfg.Listen)
+			sess.DHT.Announce(infoHash, cfg.Listen)
 
 			// 2. Open TCP listener and serve incoming messages
 			ln, err := net.Listen("tcp", cfg.Listen)
@@ -299,7 +300,7 @@ func (s *Session) RunLeecher() error {
 
 				// One routine per remote connection
 				go func(c net.Conn) {
-					newPeerAsSeeder(c, s.BF, protocol.RandomPeerID(), s.Pieces, infoHash)
+					newPeerAsSeeder(c, sess.BF, protocol.RandomPeerID(), sess.Pieces, infoHash)
 					logger.Log(
 						"new_leecher",
 						map[string]any{"peer": c.RemoteAddr().String()},

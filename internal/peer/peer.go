@@ -1,8 +1,10 @@
 package peer
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"log"
 	"net"
@@ -15,17 +17,20 @@ import (
 )
 
 type Peer struct {
-	Conn     net.Conn
-	Bitfield storage.Bitfield
-	SendCh   chan protocol.Message
-	Pieces   [][]byte // Download buffer (leecher)
-	Meta     *metainfo.Meta
-	ID       [20]byte
-	OnHave   func(int) // Callback into piece picker
+	Conn            net.Conn
+	Bitfield        storage.Bitfield
+	SendCh          chan protocol.Message
+	Meta            *metainfo.Meta
+	Pieces          [][]byte  // Download buffer for leecher
+	ID              [20]byte  // Our ID
+	RemoteID        [20]byte  // Remote ID
+	OnHave          func(int) // Callback into piece picker
+	desiredInfohash [20]byte
+	handshakeDone   bool
 }
 
-func New(conn net.Conn, bf storage.Bitfield, id [20]byte) *Peer {
-	peer := &Peer{Conn: conn, Bitfield: bf, SendCh: make(chan protocol.Message, 16), ID: id}
+func New(conn net.Conn, bf storage.Bitfield, id, desiredInfohash [20]byte) *Peer {
+	peer := &Peer{Conn: conn, Bitfield: bf, SendCh: make(chan protocol.Message, 16), ID: id, desiredInfohash: desiredInfohash}
 	go peer.writer()
 	go peer.reader()
 	return peer
@@ -65,35 +70,52 @@ func (peer *Peer) reader() {
 			)
 			return
 		}
-		// log.Println("[+] Received message, len:", len(msg.Data))
 		peer.handle(msg)
 	}
 }
 
-// TODO: Write doc for each case
 func (peer *Peer) handle(message *protocol.Message) {
+    if !peer.handshakeDone && message.ID != protocol.MsgHandshake {
+        logger.Log("unexpected_message_before_handshake", map[string]any{
+            "peer": peer.Conn.RemoteAddr().String(),
+            "messageID": message.ID,
+        })
+        return
+    }
+
 	switch message.ID {
 	case protocol.MsgHandshake:
-		// DATA IS:
-		// 20 bytes infoHash
-		// 20 bytes peerID
+		if len(message.Data) != 40 {
+			logger.Log("bad_handshake",
+				map[string]any{"peer": peer.Conn.RemoteAddr().String(), "reason": "len"})
+			return
+		}
+		infoHash := message.Data[:20]
+		copy(peer.RemoteID[:], message.Data[20:40])
+
+		logger.Log("recv_handshake", map[string]any{
+			"infoHash": hex.EncodeToString(infoHash[:]),
+			"expected": hex.EncodeToString(peer.desiredInfohash[:]),
+		})
+
+		if !bytes.Equal(infoHash, peer.desiredInfohash[:]) {
+			logger.Log("infohash_mismatch", nil)
+			peer.Conn.Close()
+			return
+		}
+
+		peer.handshakeDone = true
+		logger.Log("handshake_ok",
+			map[string]any{"peer": peer.Conn.RemoteAddr().String()})
+		return
 
 	case protocol.MsgBitfield:
-		// DATA IS:
-		// n bytes (bitfield)
 		peer.Bitfield = storage.ParseBitfield(message.Data)
 
 	case protocol.MsgRequest:
-		// DATA IS:
-		// 4 bytes piece index
-		// 4 bytes offset
-		// 4 bytes length
-
 		// I ignore offset/len and always send full piece now
-		// Sorry
 
 		if peer.Pieces == nil {
-			// Leecher ignores
 			return
 		}
 		idx := int(binary.BigEndian.Uint32(message.Data)) // 4-byte index
@@ -111,10 +133,6 @@ func (peer *Peer) handle(message *protocol.Message) {
 	// Piece came.
 	// Verifies hash and Notifies other peers
 	case protocol.MsgPiece:
-		// DATA IS:
-		// 4 bytes piece index
-		// 4 bytes offset
-		// n bytes actual data
 		idx := int(binary.BigEndian.Uint32(message.Data[:4]))
 		data := message.Data[8:] // We skip index+offset
 
@@ -140,5 +158,10 @@ func (peer *Peer) handle(message *protocol.Message) {
 			peer.OnHave(idx) // Upper-layer will fan this out to others
 		}
 
+	default:
+		logger.Log("unknown_message_id", map[string]any{
+            "peer": peer.Conn.RemoteAddr().String(),
+            "messageID": message.ID,
+        })
 	}
 }

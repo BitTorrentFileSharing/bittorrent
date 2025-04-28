@@ -20,15 +20,11 @@ func xor(a, b [20]byte) (o [20]byte) {
 }
 
 // Finds the prefix len of bits from 160bits array
-// Let's pretend it is working
 func prefixLen(id [20]byte) int {
-	// Traverse each byte
 	for byteIndex := range 20 {
-		// 8 bits are zero -> skip
 		if id[byteIndex] == 0 {
 			continue
 		}
-		// This byte is not 0 - check bits
 		for bitIndex := range 8 {
 			if id[byteIndex]&(0x80>>bitIndex) != 0 {
 				return byteIndex*8 + bitIndex
