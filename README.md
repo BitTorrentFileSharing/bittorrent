@@ -1,6 +1,5 @@
 # Peer‑to‑Peer File Sharing with BitTorrent
 
-> **Project 16 – Distributed Systems Course**  
 > A minimal BitTorrent‑style P2P client written in Go.  
 > It implements chunked file transfer, _rarest‑first_ piece selection and decentralised peer discovery via a light‑weight DHT.
 
