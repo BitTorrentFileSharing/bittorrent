@@ -1,5 +1,5 @@
-// Package util provides common utility functions.
-package util
+// Package bitutil provides common utility functions for BitTorrent.
+package bitutil
 
 import (
 	"encoding/binary"
@@ -24,6 +24,7 @@ func Uint32ToBytes(n uint32) []byte {
 // Sha1Sum takes a byte slice and returns a 20-byte array.
 func Sha1Sum(bytes []byte) [20]byte {
 	var arr [20]byte
+
 	copy(arr[:], bytes)
 
 	return arr

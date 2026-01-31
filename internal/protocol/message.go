@@ -5,9 +5,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 
+	"github.com/BitTorrentFileSharing/bittorrent/internal/bitutil"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
-	"github.com/BitTorrentFileSharing/bittorrent/internal/util"
 )
 
 // Message type constants.
@@ -19,10 +20,11 @@ const (
 	MsgHave
 )
 
-// HandshakeLen is the length of a handshake message.
-// Handshake payload: 20-byte infoHash + 20-byte peerID.
-// Length = 1 (ID) + 20 + 20 = 41.
-const HandshakeLen = 1 + 20 + 20
+const (
+	idSize       = 20
+	handshakeLen = 1 + idSize + idSize
+	uint32Size   = 4
+)
 
 // Message represents a protocol message with ID and data payload.
 type Message struct {
@@ -42,23 +44,29 @@ func NewBitfield(bf storage.Bitfield) Message {
 
 // NewRequest creates a new request message for the given piece index.
 func NewRequest(idx int) Message {
+	// nolint:gosec // idx is assumed to be within uint32 range for BitTorrent
+	index := uint32(idx)
+
 	return Message{
 		ID: MsgRequest,
 		Data: append(
-			util.Uint32ToBytes(uint32(idx)),
-			util.Uint32ToBytes(0)..., // Offset is 0
+			bitutil.Uint32ToBytes(index),
+			bitutil.Uint32ToBytes(0)..., // Offset is 0
 		),
 	}
 }
 
 // NewPiece creates a new piece message with the given index and data.
 func NewPiece(idx int, piece []byte) Message {
+	// nolint:gosec // idx is assumed to be within uint32 range for BitTorrent
+	index := uint32(idx)
+
 	return Message{
 		ID: MsgPiece,
 		Data: append(
 			append(
-				util.Uint32ToBytes(uint32(idx)),
-				util.Uint32ToBytes(0)..., // Offset is 0
+				bitutil.Uint32ToBytes(index),
+				bitutil.Uint32ToBytes(0)..., // Offset is 0
 			),
 			piece...,
 		),
@@ -67,20 +75,28 @@ func NewPiece(idx int, piece []byte) Message {
 
 // NewHave creates a new have message for the given piece index.
 func NewHave(idx int) Message {
+	// nolint:gosec // idx is assumed to be within uint32 range for BitTorrent
+	index := uint32(idx)
+
 	return Message{
 		ID:   MsgHave,
-		Data: util.Uint32ToBytes(uint32(idx)),
+		Data: bitutil.Uint32ToBytes(index),
 	}
 }
 
 // Encode forms a TCP packet and writes it to the given writer.
 func (m *Message) Encode(pipe io.Writer) error {
+	payloadLen := 1 + len(m.Data)
+	if payloadLen > math.MaxUint32 {
+		return errors.New("message too large")
+	}
+
 	// 1. Write prefix which tells length of message.
-	// 1-byte for ID. N-byte for Data
-	if err := binary.Write(pipe, binary.BigEndian, uint32(1+len(m.Data))); err != nil {
+	// nolint:gosec // payloadLen is checked against math.MaxUint32 above
+	if err := binary.Write(pipe, binary.BigEndian, uint32(payloadLen)); err != nil {
 		return err
 	}
-	// 2. writes type of msg (1-byte ID). See translation above
+	// 2. writes type of msg (1-byte ID).
 	if err := binary.Write(pipe, binary.BigEndian, m.ID); err != nil {
 		return err
 	}
@@ -111,8 +127,8 @@ func Decode(r io.Reader) (*Message, error) {
 }
 
 // RandomPeerID generates a random 20-byte peer ID.
-func RandomPeerID() [20]byte {
-	var id [20]byte
+func RandomPeerID() [idSize]byte {
+	var id [idSize]byte
 
 	_, err := rand.Read(id[:])
 	if err != nil {

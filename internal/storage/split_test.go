@@ -1,7 +1,7 @@
 package storage_test
 
 import (
-	"crypto/sha1"
+	"crypto/sha1" // nolint:gosec // SHA-1 is required by the BitTorrent protocol
 	"os"
 	"path/filepath"
 	"strings"

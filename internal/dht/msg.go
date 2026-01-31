@@ -43,11 +43,13 @@ func send(conn *net.UDPConn, addr *net.UDPAddr, m Msg) error {
 	return err
 }
 
+const udpBufferSize = 1024
+
 // recv reads a UDP message and attempts to decode it as Msg.
 func recv(conn *net.UDPConn) (Msg, *net.UDPAddr, error) {
 	var msg Msg
 
-	buf := make([]byte, 1024)
+	buf := make([]byte, udpBufferSize)
 
 	n, addr, err := conn.ReadFromUDP(buf)
 	if err != nil {

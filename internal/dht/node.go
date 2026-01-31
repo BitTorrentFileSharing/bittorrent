@@ -12,9 +12,17 @@ import (
 	"github.com/BitTorrentFileSharing/bittorrent/internal/protocol"
 )
 
+const (
+	inboxBufferSize     = 32
+	inboxPeerBufferSize = 8
+	maxReplyNodes       = 10
+	findPeersTimeout    = 500 * time.Millisecond
+	idLen               = 20
+)
+
 // Node represents a DHT node with its ID, connection and routing table.
 type Node struct {
-	ID           [20]byte            // Node ID (SHA-1)
+	ID           [idLen]byte         // Node ID (SHA-1)
 	Conn         *net.UDPConn        // UDP conn for communication
 	RoutingTable *Table              // Contains known peers
 	Seeds        map[string][]string // InfoHash -> []tcpAddr
@@ -49,8 +57,8 @@ func New(listen string) (*Node, error) {
 		Conn:         conn,
 		RoutingTable: NewTable(id),
 		Seeds:        make(map[string][]string),
-		inbox:        make(chan packet, 32),
-		inboxPeer:    make(chan packet, 8),
+		inbox:        make(chan packet, inboxBufferSize),
+		inboxPeer:    make(chan packet, inboxPeerBufferSize),
 	}
 
 	logger.Log(
@@ -91,8 +99,8 @@ func (node *Node) dispatchLoop() {
 
 func (node *Node) handle(msg Msg, adr *net.UDPAddr) {
 	// Refresh routing table with sender's node-ID
-	if raw, err := hex.DecodeString(msg.ID); err == nil && len(raw) == 20 {
-		var id20 [20]byte
+	if raw, err := hex.DecodeString(msg.ID); err == nil && len(raw) == idLen {
+		var id20 [idLen]byte
 
 		copy(id20[:], raw)
 		node.RoutingTable.Update(Peer{ID: id20, Addr: adr})
@@ -100,91 +108,98 @@ func (node *Node) handle(msg Msg, adr *net.UDPAddr) {
 
 	switch msg.T {
 	case "ping":
-		// Collect peers and send them
-		var dhtPeers []MsgPeer
-		for _, n := range node.RoutingTable.GetNPeers(10) {
-			dhtPeers = append(dhtPeers, MsgPeer{
-				ID:   hex.EncodeToString(n.ID[:]),
-				Addr: n.Addr.String(),
-			})
-		}
-
-		_ = send(node.Conn, adr, Msg{
-			T:        "pong",
-			ID:       hex.EncodeToString(node.ID[:]),
-			DHTPeers: dhtPeers,
-		})
-
-		// LOGGER START
-		var addresses []string
-		for _, peer := range dhtPeers {
-			addresses = append(addresses, peer.Addr)
-		}
-
-		logger.Log("sent_ping_ponged_peers", map[string]any{"peers": addresses})
-		// LOGGER END
-
+		node.handlePing(adr)
 	case "pong":
-		// take UDP nodes there
-		msgPeers := msg.DHTPeers
-		for _, msgPeer := range msgPeers {
-			udpAddr, err := net.ResolveUDPAddr("udp4", msgPeer.Addr)
-			if err != nil {
-				logger.Log("bad_address", map[string]any{
-					"addr": msgPeer.Addr,
-					"err":  err.Error(),
-				})
-
-				continue
-			}
-
-			rawID, err := hex.DecodeString(msgPeer.ID)
-			if err != nil {
-				logger.Log("bad_dht_peer", map[string]any{"err": err.Error()})
-
-				continue
-			}
-
-			var id20 [20]byte
-
-			copy(id20[:], rawID)
-
-			peer := Peer{
-				ID:   id20,
-				Addr: udpAddr,
-			}
-			node.RoutingTable.Update(peer)
-		}
-
+		node.handlePong(msg)
 	case "announce":
-		if msg.Addr != "" {
-			addTCP(node.Seeds, msg.Info, msg.Addr)
-		}
-
-		// LOG INFORMATION
-		var out []string
-		for infoHash, peers := range node.Seeds {
-			out = append(out, fmt.Sprintf("%s: [%s]",
-				infoHash,
-				strings.Join(peers, ", "),
-			))
-		}
-
-		logger.Log("AVAILABLE_SEEDERS", map[string]any{"seeders": out})
-		// LOG END
-
+		node.handleAnnounce(msg)
 	case "findPeers":
-		list := slices.Clone(node.Seeds[msg.Info]) // known seeders
-		list = deduplicate(list)
-		logger.Log("Answer to findPeers", map[string]any{"seeders": list})
+		node.handleFindPeers(msg, adr)
+	}
+}
 
-		_ = send(node.Conn, adr, Msg{
-			T:       "peers",
-			ID:      hex.EncodeToString(node.ID[:]),
-			Info:    msg.Info,
-			TCPList: list,
+func (node *Node) handlePing(adr *net.UDPAddr) {
+	// Collect peers and send them
+	peers := node.RoutingTable.GetNPeers(maxReplyNodes)
+	dhtPeers := make([]MsgPeer, 0, len(peers))
+	addresses := make([]string, 0, len(peers))
+
+	for _, n := range peers {
+		idHex := hex.EncodeToString(n.ID[:])
+		addrStr := n.Addr.String()
+
+		dhtPeers = append(dhtPeers, MsgPeer{
+			ID:   idHex,
+			Addr: addrStr,
+		})
+		addresses = append(addresses, addrStr)
+	}
+
+	_ = send(node.Conn, adr, Msg{
+		T:        "pong",
+		ID:       hex.EncodeToString(node.ID[:]),
+		DHTPeers: dhtPeers,
+	})
+
+	logger.Log("sent_ping_ponged_peers", map[string]any{"peers": addresses})
+}
+
+func (node *Node) handlePong(msg Msg) {
+	msgPeers := msg.DHTPeers
+	for _, msgPeer := range msgPeers {
+		udpAddr, err := net.ResolveUDPAddr("udp4", msgPeer.Addr)
+		if err != nil {
+			logger.Log("bad_address", map[string]any{
+				"addr": msgPeer.Addr,
+				"err":  err.Error(),
+			})
+
+			continue
+		}
+
+		rawID, err := hex.DecodeString(msgPeer.ID)
+		if err != nil || len(rawID) != idLen {
+			continue
+		}
+
+		var id20 [idLen]byte
+		copy(id20[:], rawID)
+
+		node.RoutingTable.Update(Peer{
+			ID:   id20,
+			Addr: udpAddr,
 		})
 	}
+}
+
+func (node *Node) handleAnnounce(msg Msg) {
+	if msg.Addr != "" {
+		addTCP(node.Seeds, msg.Info, msg.Addr)
+	}
+
+	out := make([]string, 0, len(node.Seeds))
+	for infoHash, peers := range node.Seeds {
+		out = append(out, fmt.Sprintf("%s: [%s]",
+			infoHash,
+			strings.Join(peers, ", "),
+		))
+	}
+
+	logger.Log("AVAILABLE_SEEDERS", map[string]any{"seeders": out})
+}
+
+func (node *Node) handleFindPeers(msg Msg, adr *net.UDPAddr) {
+	list := slices.Clone(node.Seeds[msg.Info])
+	list = deduplicate(list)
+
+	logger.Log("Answer to findPeers", map[string]any{"seeders": list})
+
+	_ = send(node.Conn, adr, Msg{
+		T:       "peers",
+		ID:      hex.EncodeToString(node.ID[:]),
+		Info:    msg.Info,
+		TCPList: list,
+	})
 }
 
 // Ping sends a ping message to the given address (expects pong).
@@ -215,7 +230,7 @@ func (node *Node) Announce(hexInfoHash, tcpContact string) {
 }
 
 // FindPeers sends a single findPeers query to bootstrap and waits
-// up to 500 ms for a corresponding "peers" reply. It returns the list
+// for a corresponding "peers" reply. It returns the list
 // of TCP addresses contained in that reply.
 func (node *Node) FindPeers(bootstrap string, infoHex string) []string {
 	// 1. Send query
@@ -232,7 +247,7 @@ func (node *Node) FindPeers(bootstrap string, infoHex string) []string {
 		Info: infoHex,
 	})
 
-	timeout := time.After(500 * time.Millisecond)
+	timeout := time.After(findPeersTimeout)
 	for {
 		select {
 		case p := <-node.inboxPeer:

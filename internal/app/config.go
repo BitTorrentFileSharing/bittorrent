@@ -1,9 +1,9 @@
-// CLI Flags parsed here
-
+// Package app contains the core application logic and configuration.
 package app
 
 import "flag"
 
+// Config holds the application configuration parsed from command line flags.
 type Config struct {
 	SeedPath       string
 	MetaPath       string
@@ -15,6 +15,7 @@ type Config struct {
 	KeepSeedingSec int
 }
 
+// ParseFlags parses the command line flags and returns a Config pointer.
 func ParseFlags() *Config {
 	var c Config
 	flag.StringVar(&c.SeedPath, "seed", "", "path to payload to seed")
@@ -26,5 +27,6 @@ func ParseFlags() *Config {
 	flag.StringVar(&c.BootstrapCSV, "bootstrap", "", "comma-separated UDP bootstrap nodes")
 	flag.IntVar(&c.KeepSeedingSec, "keep", 0, "seconds to keep seeding after complete")
 	flag.Parse()
+
 	return &c
 }

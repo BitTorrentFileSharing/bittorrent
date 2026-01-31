@@ -2,6 +2,7 @@
 package app
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,12 +12,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BitTorrentFileSharing/bittorrent/internal/bitutil"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/logger"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/metainfo"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/peer"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/protocol"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
-	"github.com/BitTorrentFileSharing/bittorrent/internal/util"
+)
+
+const (
+	dhtAnnounceMaxTries  = 5
+	leecherLookupRetries = 100
 )
 
 // Session owns the live state of a single .bit torrent.
@@ -59,7 +65,7 @@ func NewSession(cfg *Config, meta *metainfo.Meta) (*Session, error) {
 
 	// UDP layer Boost
 	dhtSvc, err := StartDHT(cfg.DHTListen, cfg.BootstrapCSV)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrDHTDisabled) {
 		return nil, err
 	}
 
@@ -98,22 +104,7 @@ func (sess *Session) RunSeeder() error {
 	// UDP listener loop
 	if sess.DHT != nil {
 		infoHash, _ := protocol.InfoHash(metaPath)
-		maxTries := 5
-
-		for range maxTries {
-			addresses := sess.DHT.Node.RoutingTable.CheckAddresses()
-			if addresses == nil {
-				logger.Log("seeder did not find DHT yet... try again after 5 sec", nil)
-				time.Sleep(5 * time.Second)
-
-				continue
-			}
-
-			logger.Log("Seeder_announce", map[string]any{"dht": addresses})
-			sess.DHT.Announce(infoHash, cfg.Listen)
-
-			break
-		}
+		go sess.announceInLoop(infoHash)
 	}
 
 	// TCP listener loop
@@ -121,7 +112,8 @@ func (sess *Session) RunSeeder() error {
 	infoHash, _ := protocol.InfoHash(metaPath)
 	sess.InfoHash = infoHash
 
-	ln, err := net.Listen("tcp", cfg.Listen)
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
@@ -135,24 +127,46 @@ func (sess *Session) RunSeeder() error {
 		},
 	)
 
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			logger.Log(
-				"accept_err",
-				map[string]any{"err": err.Error()},
-			)
+	sess.serveTCP(ln, infoHash, peerID)
+
+	return nil
+}
+
+func (sess *Session) announceInLoop(infoHash [20]byte) {
+	for range dhtAnnounceMaxTries {
+		addresses := sess.DHT.Node.RoutingTable.CheckAddresses()
+		if addresses == nil {
+			logger.Log("seeder did not find DHT yet... try again after 5 sec", nil)
+			time.Sleep(dhtAnnounceRetryDelay)
 
 			continue
 		}
+
+		logger.Log("Seeder_announce", map[string]any{"dht": addresses})
+		sess.DHT.Announce(infoHash, sess.cfg.Listen)
+
+		break
+	}
+}
+
+func (sess *Session) serveTCP(ln net.Listener, infoHash [20]byte, peerID [20]byte) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				break
+			}
+
+			logger.Log("accept_err", map[string]any{"err": err.Error()})
+
+			continue
+		}
+
 		// One goroutine per remote peer
 		go func(c net.Conn) {
 			p := newPeerAsSeeder(c, sess.BF, peerID, sess.Pieces, infoHash)
-			logger.Log(
-				"new_leecher",
-				map[string]any{"peer": c.RemoteAddr().String()},
-			)
-			_ = p // peer goroutine handles traffic, nothing to do
+			logger.Log("new_leecher", map[string]any{"peer": c.RemoteAddr().String()})
+			_ = p
 		}(conn)
 	}
 }
@@ -164,7 +178,7 @@ func (sess *Session) ensureMeta(dataPath, metaPath string) error {
 		return nil
 	}
 
-	if util.Exists(metaPath) {
+	if bitutil.Exists(metaPath) {
 		m, err := metainfo.Load(metaPath)
 		if err != nil {
 			return err
@@ -206,7 +220,8 @@ func (sess *Session) ensureMeta(dataPath, metaPath string) error {
 
 // newPeerAsSeeder is a helper to wrap peer.New with seeder-specific fields.
 func newPeerAsSeeder(c net.Conn, bf storage.Bitfield, id [20]byte,
-	allPieces [][]byte, infoHash [20]byte) *peer.Peer {
+	allPieces [][]byte, infoHash [20]byte,
+) *peer.Peer {
 	p := peer.New(c, bf, id, infoHash) // Spawn threads btw
 	p.Pieces = allPieces
 	logger.Log("send_handshake", map[string]any{
@@ -225,10 +240,7 @@ func (sess *Session) RunLeecher() error {
 	// Load .bit
 	meta, err := metainfo.Load(cfg.MetaPath)
 	if err != nil {
-		logger.Log(
-			"leecher_load_metainfo_err",
-			map[string]any{"error": err.Error()},
-		)
+		logger.Log("leecher_load_metainfo_err", map[string]any{"error": err.Error()})
 
 		return err
 	}
@@ -249,23 +261,8 @@ func (sess *Session) RunLeecher() error {
 		"desired_infoHash": hex.EncodeToString(infoHash[:]),
 	})
 
-	// Try 100 times to find seeder
-	maxTries := 100
-
-	for range maxTries {
-		peers := sess.DHT.LookupPeers(infoHash)
-		if len(peers) == 0 {
-			time.Sleep(5 * time.Second)
-
-			continue
-		}
-
-		if len(peers) > 0 {
-			cfg.PeersCSV += "," + strings.Join(peers, ",")
-			logger.Log("leecher_bootstrap", map[string]any{"new_peers": peers})
-
-			break
-		}
+	if err := sess.findSeeders(infoHash); err != nil {
+		return err
 	}
 
 	// TCP side
@@ -274,82 +271,73 @@ func (sess *Session) RunLeecher() error {
 	sess.Swarm.Loop() // Blocks until the file is complete
 
 	// Starts seeding
-	// Code is similar to runSeeder there
 	if cfg.KeepSeedingSec > 0 {
-		if cfg.Listen == ":0" {
-			return errors.New("please, specify exact tcp address in order to seed '-tcp-listen x'")
-		}
-
-		errCh := make(chan error, 1)
-
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					errCh <- fmt.Errorf("seeder panic: %v", r)
-				}
-			}()
-
-			logger.Log("seeder_ready", map[string]any{
-				"file": strings.TrimSuffix(filepath.Base(cfg.MetaPath), ".bit"),
-				"tcp":  cfg.Listen,
-			})
-
-			// 1. Announce itself for known peers
-			sess.DHT.Announce(infoHash, cfg.Listen)
-
-			// 2. Open TCP listener and serve incoming messages
-			ln, err := net.Listen("tcp", cfg.Listen)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to listen on %s: %w", cfg.Listen, err)
-
-				return
-			}
-
-			// close listener after n sec
-			go func() {
-				<-time.After(time.Duration(cfg.KeepSeedingSec) * time.Second)
-				_ = ln.Close()
-			}()
-
-			for {
-				conn, err := ln.Accept()
-				if err != nil {
-					// Error via closing due time?
-					var opErr *net.OpError
-					if errors.As(err, &opErr) &&
-						opErr.Err.Error() == "use of closed network connection" {
-						break
-					}
-
-					logger.Log(
-						"accept_err",
-						map[string]any{"err": err.Error()},
-					)
-
-					continue
-				}
-
-				// One routine per remote connection
-				go func(c net.Conn) {
-					newPeerAsSeeder(c, sess.BF, protocol.RandomPeerID(), sess.Pieces, infoHash)
-					logger.Log(
-						"new_leecher",
-						map[string]any{"peer": c.RemoteAddr().String()},
-					)
-				}(conn)
-			}
-
-			<-time.After(time.Duration(cfg.KeepSeedingSec) * time.Second)
-			logger.Log("leecher_stopped_seeding", nil)
-			errCh <- nil
-		}()
-
-		if err := <-errCh; err != nil {
-			return err
-		}
+		return sess.keepSeeding(infoHash)
 	}
 
 	return nil
+}
+
+func (sess *Session) findSeeders(infoHash [20]byte) error {
+	for range leecherLookupRetries {
+		peers := sess.DHT.LookupPeers(infoHash)
+		if len(peers) == 0 {
+			time.Sleep(dhtAnnounceRetryDelay)
+
+			continue
+		}
+
+		sess.cfg.PeersCSV += "," + strings.Join(peers, ",")
+		logger.Log("leecher_bootstrap", map[string]any{"new_peers": peers})
+
+		return nil
+	}
+
+	return nil
+}
+
+func (sess *Session) keepSeeding(infoHash [20]byte) error {
+	cfg := sess.cfg
+	if cfg.Listen == ":0" {
+		return errors.New("please, specify exact tcp address in order to seed '-tcp-listen x'")
+	}
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				errCh <- fmt.Errorf("seeder panic: %v", r)
+			}
+		}()
+
+		logger.Log("seeder_ready", map[string]any{
+			"file": strings.TrimSuffix(filepath.Base(cfg.MetaPath), ".bit"),
+			"tcp":  cfg.Listen,
+		})
+
+		sess.DHT.Announce(infoHash, cfg.Listen)
+
+		lc := net.ListenConfig{}
+		ln, err := lc.Listen(context.Background(), "tcp", cfg.Listen)
+		if err != nil {
+			errCh <- fmt.Errorf("failed to listen on %s: %w", cfg.Listen, err)
+
+			return
+		}
+
+		go func() {
+			<-time.After(time.Duration(cfg.KeepSeedingSec) * time.Second)
+			_ = ln.Close()
+		}()
+
+		sess.serveTCP(ln, infoHash, protocol.RandomPeerID())
+
+		logger.Log("leecher_stopped_seeding", nil)
+		errCh <- nil
+	}()
+
+	return <-errCh
 }
 
 // MarkPiece saves data and sets the bit for a piece.

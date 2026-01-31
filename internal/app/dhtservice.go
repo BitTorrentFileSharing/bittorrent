@@ -2,23 +2,33 @@ package app
 
 import (
 	"encoding/hex"
+	"errors"
 	"strings"
 
 	"github.com/BitTorrentFileSharing/bittorrent/internal/dht"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/logger"
 )
 
+// ErrDHTDisabled is returned when StartDHT is called with an empty listen address.
+var ErrDHTDisabled = errors.New("dht is disabled")
+
 // DHTService wraps a DHT node for peer discovery.
 type DHTService struct {
 	Node *dht.Node
 }
+
+const (
+	lookupAlpha     = 10 // num of parallel queries
+	lookupMaxRounds = 10 // iterative depth
+	lookupMaxPeers  = 50 // stop early criteria
+)
 
 // StartDHT creates a UDP node and kicks off bootstrap pings.
 func StartDHT(listen string, bootstrapCSV string) (*DHTService, error) {
 	if listen == "" { // User disabled DHT
 		logger.Log("dht_disabled", nil)
 
-		return nil, nil
+		return nil, ErrDHTDisabled
 	}
 
 	dhtNode, err := dht.New(listen)
@@ -39,21 +49,15 @@ func StartDHT(listen string, bootstrapCSV string) (*DHTService, error) {
 }
 
 // LookupPeers searches for peers serving the given infoHash.
-func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
+func (svc *DHTService) LookupPeers(infoHash [idSize]byte) []string {
 	if svc == nil {
 		return nil
 	}
 
-	const (
-		alpha     = 10 // num of parallel queries
-		maxRounds = 10 // iterative depth
-		maxPeers  = 50 // stop early criteria
-	)
-
 	hexedInfoHash := hex.EncodeToString(infoHash[:])
 
 	seen := map[string]struct{}{} // Just a set
-	queue := svc.Node.RoutingTable.Closest(infoHash, alpha)
+	queue := svc.Node.RoutingTable.Closest(infoHash, lookupAlpha)
 
 	// START LOGS
 	dhtAddresses := make([]string, 0, len(queue))
@@ -64,7 +68,7 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 	logger.Log("leecher_peers_lookup", map[string]any{"available_dhts": dhtAddresses})
 	// END LOGS
 
-	for round := 0; round < maxRounds && len(queue) > 0 && len(seen) < maxPeers; round++ {
+	for round := 0; round < lookupMaxRounds && len(queue) > 0 && len(seen) < lookupMaxPeers; round++ {
 		target := queue[0]
 		queue = queue[1:]
 
@@ -93,7 +97,7 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 }
 
 // Announce tells DHT peers that we serve the given infoHash at tcpAddr.
-func (svc *DHTService) Announce(infoHash [20]byte, tcpAddr string) {
+func (svc *DHTService) Announce(infoHash [idSize]byte, tcpAddr string) {
 	if svc == nil {
 		return
 	}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/hex"
 	"math/rand"
 	"net"
@@ -33,7 +34,10 @@ type Swarm struct {
 	isDone chan bool
 }
 
-const tickerPeriod = 2 * time.Second
+const (
+	tickerPeriod = 2 * time.Second
+	dialTimeout  = 10 * time.Second
+)
 
 // NewSwarm creates a new swarm taking session.
 func NewSwarm(sess *Session, destDir string, keep int) *Swarm {
@@ -57,7 +61,7 @@ func NewSwarm(sess *Session, destDir string, keep int) *Swarm {
 }
 
 // Dial dials CSV peers and attaches them to the Swarm.
-func (sw *Swarm) Dial(csv string, infoHash [20]byte) {
+func (sw *Swarm) Dial(csv string, infoHash [idSize]byte) {
 	for addr := range strings.SplitSeq(csv, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -66,7 +70,8 @@ func (sw *Swarm) Dial(csv string, infoHash [20]byte) {
 
 		go func(a string) {
 			// Join peer to network
-			conn, err := net.Dial("tcp", a)
+			d := net.Dialer{Timeout: dialTimeout}
+			conn, err := d.DialContext(context.Background(), "tcp", a)
 			if err != nil {
 				logger.Log(
 					"dial_err",
@@ -223,6 +228,7 @@ func (sw *Swarm) request(idx int) {
 		return // No available peers
 	}
 
+	// nolint:gosec // Weak random is fine for peer selection
 	randomPeerIdx := rand.Intn(len(goodPeers))
 	chosenPeer := goodPeers[randomPeerIdx]
 
