@@ -135,7 +135,7 @@ func (sess *Session) RunSeeder() error {
 func (sess *Session) announceInLoop(infoHash [20]byte) {
 	for range dhtAnnounceMaxTries {
 		addresses := sess.DHT.Node.RoutingTable.CheckAddresses()
-		if addresses == nil {
+		if len(addresses) == 0 {
 			logger.Log("seeder did not find DHT yet... try again after 5 sec", nil)
 			time.Sleep(dhtAnnounceRetryDelay)
 
