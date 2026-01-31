@@ -1,3 +1,5 @@
+version: "2"
+
 # More info on config here: https://golangci-lint.run/usage/configuration/#config-file
 run:
   timeout: 10m
@@ -6,9 +8,11 @@ run:
 
 output:
   formats:
-    - format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
+    text:
+      path: stdout
+      colors: true
+      print-issued-lines: true
+      print-linter-name: true
 
 linters-settings:
   nolintlint:
@@ -53,7 +57,6 @@ linters:
     - forbidigo
     - forcetypeassert
     - funlen
-    - gci
     - ginkgolinter
     - gocheckcompilerdirectives
     - gochecknoinits
@@ -63,14 +66,10 @@ linters:
     - gocritic
     - gocyclo
     - godox
-    - gofmt
-    - gofumpt
     - goheader
-    - goimports
     - gomodguard
     - goprintffuncname
     - gosec
-    - gosimple
     - gosmopolitan
     - govet
     - grouper
@@ -107,10 +106,8 @@ linters:
     - spancheck
     - sqlclosecheck
     - staticcheck
-    - stylecheck
     - tagalign
     - tagliatelle
-    - tenv
     - testableexamples
     - testifylint
     - thelper
@@ -148,7 +145,6 @@ issues:
         - funlen
         - wsl
         - govet
-        - stylecheck
         - dupl
   exclude:
     # _ instead of err checks
@@ -163,3 +159,10 @@ issues:
     # EXC0001 errcheck: Almost all programs ignore errs on these functions and in most cases it's ok
     - Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*print(f|ln)?|os\.(Un)?Setenv). is not checked
     - should check returned error before deferring
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
