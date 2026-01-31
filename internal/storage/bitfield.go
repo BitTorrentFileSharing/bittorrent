@@ -1,19 +1,23 @@
-// To know whether one owns dataPiece or not
+// Package storage provides utilities for managing torrent data pieces
+// and tracking piece ownership.
 package storage
 
-// Just a bunch of bytes
+// Bitfield represents piece ownership as a slice of bytes where each byte
+// indicates whether a piece is owned (1) or not (0).
 type Bitfield []byte // len == numPieces
 
-// Returns new bitfield sized n bytes.
-// Bitfield corresponds to piece ownership fact
+// NewBitfield returns a new bitfield sized n bytes.
+// Bitfield corresponds to piece ownership fact.
 func NewBitfield(n int) Bitfield { return make([]byte, n) }
 
-// Asks i-th == 1?
+// Has returns true if the i-th piece is owned.
 func (bf Bitfield) Has(i int) bool { return bf[i] == 1 }
-// Sets i-th bit to 1
-func (bf Bitfield) Set(i int)      { bf[i] = 1 }
 
-// Serialize bitfield to bytes
-func (bf Bitfield) Bytes() []byte     { return []byte(bf) }
-// Parse bytes for bitfield
+// Set marks the i-th piece as owned.
+func (bf Bitfield) Set(i int) { bf[i] = 1 }
+
+// Bytes serializes the bitfield to bytes.
+func (bf Bitfield) Bytes() []byte { return []byte(bf) }
+
+// ParseBitfield parses bytes into a Bitfield.
 func ParseBitfield(b []byte) Bitfield { return Bitfield(b) }

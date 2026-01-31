@@ -15,7 +15,7 @@ import (
 	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
 )
 
-// Swarm manages peers
+// Swarm manages peers and coordinates piece downloads.
 type Swarm struct {
 	Sess  *Session // Shared pieces & bitfield
 	Peers []*peer.Peer
@@ -33,15 +33,17 @@ type Swarm struct {
 	isDone chan bool
 }
 
-const tickerPeriod = time.Duration(2 * time.Second)
+const tickerPeriod = 2 * time.Second
 
-// Creates new swarm taking session
+// NewSwarm creates a new swarm taking session.
 func NewSwarm(sess *Session, destDir string, keep int) *Swarm {
 	n := len(sess.Meta.Hashes)
 	miss := make([]bool, n)
+
 	for i := range miss {
 		miss[i] = true
 	}
+
 	return &Swarm{
 		Sess:         sess,
 		mu:           sync.Mutex{},
@@ -54,13 +56,14 @@ func NewSwarm(sess *Session, destDir string, keep int) *Swarm {
 	}
 }
 
-// Dial CSV peers and attach to Swarm
+// Dial dials CSV peers and attaches them to the Swarm.
 func (sw *Swarm) Dial(csv string, infoHash [20]byte) {
 	for addr := range strings.SplitSeq(csv, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
 			continue
 		}
+
 		go func(a string) {
 			// Join peer to network
 			conn, err := net.Dial("tcp", a)
@@ -69,8 +72,10 @@ func (sw *Swarm) Dial(csv string, infoHash [20]byte) {
 					"dial_err",
 					map[string]any{"peer": a, "err": err.Error()},
 				)
+
 				return
 			}
+
 			logger.Log("joined_to_peer", map[string]any{"peer": a})
 
 			p := peer.New(conn, sw.Sess.BF, protocol.RandomPeerID(), sw.Sess.InfoHash)
@@ -79,7 +84,9 @@ func (sw *Swarm) Dial(csv string, infoHash [20]byte) {
 
 			p.OnHave = func(idx int) { sw.onHave(p, idx) }
 
-			logger.Log("send_handshake_dial", map[string]any{"infoHash": hex.EncodeToString(infoHash[:])})
+			logger.Log("send_handshake_dial", map[string]any{
+				"infoHash": hex.EncodeToString(infoHash[:]),
+			})
 			p.SendCh <- protocol.NewHandshake(infoHash[:], p.ID[:])
 			p.SendCh <- protocol.NewBitfield(sw.Sess.BF)
 
@@ -90,12 +97,14 @@ func (sw *Swarm) Dial(csv string, infoHash [20]byte) {
 	}
 }
 
-// Central callback when *any* peer finishes a piece or disconnects
+// onHave is the central callback when any peer finishes a piece or disconnects.
 func (sw *Swarm) onHave(src *peer.Peer, idx int) {
 	if idx == -1 { // Disconnect
 		logger.Log("leave", map[string]any{"peer": src.Conn.RemoteAddr().String()})
+
 		return
 	}
+
 	if !sw.missing[idx] { // Got a piece that was owned already
 		return
 	}
@@ -117,11 +126,13 @@ func (sw *Swarm) onHave(src *peer.Peer, idx int) {
 	// Broadcast to everyone else
 	have := protocol.NewHave(idx)
 	sw.mu.Lock()
+
 	for _, p := range sw.Peers {
 		if p != src {
 			p.SendCh <- have
 		}
 	}
+
 	sw.mu.Unlock()
 
 	// Finished taking algorithm
@@ -132,6 +143,7 @@ func (sw *Swarm) onHave(src *peer.Peer, idx int) {
 		} else {
 			logger.Log("complete", map[string]any{"file": outPath})
 		}
+
 		sw.isDone <- true
 	}
 
@@ -142,7 +154,7 @@ func (sw *Swarm) onHave(src *peer.Peer, idx int) {
 	}
 }
 
-// Start rarest-first loop (blocking)
+// Loop starts the rarest-first loop (blocking).
 func (sw *Swarm) Loop() {
 	for {
 		select {
@@ -151,19 +163,22 @@ func (sw *Swarm) Loop() {
 			if idx == -1 {
 				continue
 			}
+
 			sw.request(idx)
 		case <-sw.isDone:
 			sw.ticker.Stop()
+
 			return
 		}
 	}
 }
 
-// Return rarest piece index by computing availability
+// choosePiece returns the rarest piece index by computing availability.
 func (sw *Swarm) choosePiece() int {
 	for i := range sw.availability {
 		sw.availability[i] = 0
 	}
+
 	sw.mu.Lock()
 	// Here available peers bitfield compared
 	for _, p := range sw.Peers {
@@ -173,6 +188,7 @@ func (sw *Swarm) choosePiece() int {
 			}
 		}
 	}
+
 	sw.mu.Unlock()
 
 	best := -1
@@ -180,30 +196,36 @@ func (sw *Swarm) choosePiece() int {
 		if !need { // No need to ask available piece
 			continue
 		}
+
 		if best == -1 || sw.availability[i] < sw.availability[best] {
 			best = i
 		}
 	}
+
 	return best
 }
 
-// Ask random peer to send piece indexed *idx*
+// request asks a random peer to send the piece at the given index.
 func (sw *Swarm) request(idx int) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+
 	// For fun I will ask a random peer, not a first one
-	var goodPeers []*peer.Peer
+	goodPeers := make([]*peer.Peer, 0, len(sw.Peers))
+
 	for _, p := range sw.Peers {
 		if p.Bitfield.Has(idx) {
 			goodPeers = append(goodPeers, p)
 		}
 	}
+
 	if len(goodPeers) == 0 {
 		return // No available peers
 	}
+
 	randomPeerIdx := rand.Intn(len(goodPeers))
 	chosenPeer := goodPeers[randomPeerIdx]
-	
+
 	// Send request
 	chosenPeer.SendCh <- protocol.NewRequest(idx)
 	logger.Log(

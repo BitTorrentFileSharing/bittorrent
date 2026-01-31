@@ -4,24 +4,23 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"time"
-
-	"slices"
 
 	"github.com/BitTorrentFileSharing/bittorrent/internal/logger"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/protocol"
 )
 
-// DHT node with its id, connection and routingTable
-type DHTNode struct {
+// Node represents a DHT node with its ID, connection and routing table.
+type Node struct {
 	ID           [20]byte            // Node ID (SHA-1)
 	Conn         *net.UDPConn        // UDP conn for communication
 	RoutingTable *Table              // Contains known peers
 	Seeds        map[string][]string // InfoHash -> []tcpAddr
 	inbox        chan packet         // Channel of incoming UDP messages
 
-	// Same inbox, but for different messages type that need to be isolated
+	// Same inbox, but for different message types that need to be isolated
 	inboxPeer chan packet
 }
 
@@ -30,12 +29,13 @@ type packet struct {
 	adr *net.UDPAddr
 }
 
-// Creates and start a new DHT node listening on a specified address.
-func New(listen string) (*DHTNode, error) {
+// New creates and starts a new DHT node listening on the specified address.
+func New(listen string) (*Node, error) {
 	addr, err := net.ResolveUDPAddr("udp4", listen)
 	if err != nil {
 		return nil, err
 	}
+
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
 		return nil, err
@@ -44,7 +44,7 @@ func New(listen string) (*DHTNode, error) {
 	// Generate a basic node ID
 	id := protocol.RandomPeerID()
 
-	node := &DHTNode{
+	node := &Node{
 		ID:           id,
 		Conn:         conn,
 		RoutingTable: NewTable(id),
@@ -64,19 +64,21 @@ func New(listen string) (*DHTNode, error) {
 	return node, nil
 }
 
-// 1. Single UDP reader goroutine
-func (node *DHTNode) udpLoop() {
+// udpLoop is the single UDP reader goroutine.
+func (node *Node) udpLoop() {
 	for {
 		msg, adr, err := recv(node.Conn)
 		if err != nil {
 			logger.Log("UDP_recv_error", map[string]any{"error": err.Error()})
+
 			continue // Silently ignore incoming errors
 		}
+
 		node.inbox <- packet{msg, adr}
 	}
 }
 
-func (node *DHTNode) dispatchLoop() {
+func (node *Node) dispatchLoop() {
 	for p := range node.inbox {
 		// Need to handle peers isolated
 		if p.msg.T == "peers" {
@@ -87,10 +89,11 @@ func (node *DHTNode) dispatchLoop() {
 	}
 }
 
-func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
+func (node *Node) handle(msg Msg, adr *net.UDPAddr) {
 	// Refresh routing table with sender's node-ID
 	if raw, err := hex.DecodeString(msg.ID); err == nil && len(raw) == 20 {
 		var id20 [20]byte
+
 		copy(id20[:], raw)
 		node.RoutingTable.Update(Peer{ID: id20, Addr: adr})
 	}
@@ -99,13 +102,16 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 	case "ping":
 		// Collect peers and send them
 		var dhtPeers []MsgPeer
-		for _, node := range node.RoutingTable.GetNPeers(10) {
-			dhtPeers = append(dhtPeers, MsgPeer{ID: hex.EncodeToString(node.ID[:]), Addr: node.Addr.String()})
+		for _, n := range node.RoutingTable.GetNPeers(10) {
+			dhtPeers = append(dhtPeers, MsgPeer{
+				ID:   hex.EncodeToString(n.ID[:]),
+				Addr: n.Addr.String(),
+			})
 		}
-		
-		send(node.Conn, adr, Msg{
-			T: "pong",
-			ID: hex.EncodeToString(node.ID[:]),
+
+		_ = send(node.Conn, adr, Msg{
+			T:        "pong",
+			ID:       hex.EncodeToString(node.ID[:]),
 			DHTPeers: dhtPeers,
 		})
 
@@ -114,6 +120,7 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 		for _, peer := range dhtPeers {
 			addresses = append(addresses, peer.Addr)
 		}
+
 		logger.Log("sent_ping_ponged_peers", map[string]any{"peers": addresses})
 		// LOGGER END
 
@@ -123,17 +130,27 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 		for _, msgPeer := range msgPeers {
 			udpAddr, err := net.ResolveUDPAddr("udp4", msgPeer.Addr)
 			if err != nil {
-				logger.Log("bad_address", map[string]any{"addr": msgPeer.Addr, "err": err.Error()})
+				logger.Log("bad_address", map[string]any{
+					"addr": msgPeer.Addr,
+					"err":  err.Error(),
+				})
+
+				continue
 			}
+
 			rawID, err := hex.DecodeString(msgPeer.ID)
 			if err != nil {
 				logger.Log("bad_dht_peer", map[string]any{"err": err.Error()})
+
+				continue
 			}
+
 			var id20 [20]byte
+
 			copy(id20[:], rawID)
 
 			peer := Peer{
-				ID: id20,
+				ID:   id20,
 				Addr: udpAddr,
 			}
 			node.RoutingTable.Update(peer)
@@ -152,6 +169,7 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 				strings.Join(peers, ", "),
 			))
 		}
+
 		logger.Log("AVAILABLE_SEEDERS", map[string]any{"seeders": out})
 		// LOG END
 
@@ -160,27 +178,27 @@ func (node *DHTNode) handle(msg Msg, adr *net.UDPAddr) {
 		list = deduplicate(list)
 		logger.Log("Answer to findPeers", map[string]any{"seeders": list})
 
-		send(node.Conn, adr, Msg{
-			T: "peers", ID: hex.EncodeToString(node.ID[:]),
-			Info: msg.Info, TcpList: list,
+		_ = send(node.Conn, adr, Msg{
+			T:       "peers",
+			ID:      hex.EncodeToString(node.ID[:]),
+			Info:    msg.Info,
+			TCPList: list,
 		})
 	}
 }
 
-/// Public Helpers
-
-// Sends a ping message to the given address (expects pong)
-func (node *DHTNode) Ping(addr string) {
+// Ping sends a ping message to the given address (expects pong).
+func (node *Node) Ping(addr string) {
 	resolvedAddr, _ := net.ResolveUDPAddr("udp4", addr)
-	send(node.Conn, resolvedAddr, Msg{
+	_ = send(node.Conn, resolvedAddr, Msg{
 		T:  "ping",
 		ID: hex.EncodeToString(node.ID[:]),
 	})
 }
 
 // Announce tells every known DHT neighbor (UDP) that
-// “I serve infoHash and you can fetch the file from tcpAddr”.
-func (node *DHTNode) Announce(hexInfoHash, tcpContact string) {
+// "I serve infoHash and you can fetch the file from tcpAddr".
+func (node *Node) Announce(hexInfoHash, tcpContact string) {
 	msg := Msg{
 		T:    "announce",
 		ID:   hex.EncodeToString(node.ID[:]),
@@ -191,22 +209,24 @@ func (node *DHTNode) Announce(hexInfoHash, tcpContact string) {
 	// Sends this message for each known node
 	for _, bucket := range node.RoutingTable.bucket {
 		for _, peer := range bucket.peers {
-			send(node.Conn, peer.Addr, msg)
+			_ = send(node.Conn, peer.Addr, msg)
 		}
 	}
 }
 
-// Sends a single findPeers query to *bootstrap* and waits
+// FindPeers sends a single findPeers query to bootstrap and waits
 // up to 500 ms for a corresponding "peers" reply. It returns the list
-// of TCP addresses contained in that reply. (deduplicated by caller)
-func (node *DHTNode) FindPeers(bootstrap string, infoHex string) []string {
+// of TCP addresses contained in that reply.
+func (node *Node) FindPeers(bootstrap string, infoHex string) []string {
 	// 1. Send query
 	adr, err := net.ResolveUDPAddr("udp4", bootstrap)
 	if err != nil {
 		logger.Log("findPeers_bad_address", map[string]any{"err": err.Error()})
+
 		return nil
 	}
-	send(node.Conn, adr, Msg{
+
+	_ = send(node.Conn, adr, Msg{
 		T:    "findPeers",
 		ID:   hex.EncodeToString(node.ID[:]),
 		Info: infoHex,
@@ -218,10 +238,11 @@ func (node *DHTNode) FindPeers(bootstrap string, infoHex string) []string {
 		case p := <-node.inboxPeer:
 			// Skip other messages
 			if p.msg.T == "peers" {
-				return p.msg.TcpList
+				return p.msg.TCPList
 			}
 		case <-timeout:
 			logger.Log("findPeers_timeout", map[string]any{"bootstrap": bootstrap})
+
 			return nil
 		}
 	}
@@ -231,18 +252,22 @@ func addTCP(store map[string][]string, ih, tcp string) {
 	if slices.Contains(store[ih], tcp) {
 		return
 	}
+
 	store[ih] = append(store[ih], tcp)
 }
 
 func deduplicate(in []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))
+
 	for _, v := range in {
 		if _, ok := seen[v]; ok {
 			continue
 		}
+
 		seen[v] = struct{}{}
 		out = append(out, v)
 	}
+
 	return out
 }

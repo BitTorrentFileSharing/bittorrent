@@ -8,14 +8,16 @@ import (
 	"github.com/BitTorrentFileSharing/bittorrent/internal/logger"
 )
 
+// DHTService wraps a DHT node for peer discovery.
 type DHTService struct {
-	Node *dht.DHTNode
+	Node *dht.Node
 }
 
-// Creates UDP node and kicks off bootstrap pings.
+// StartDHT creates a UDP node and kicks off bootstrap pings.
 func StartDHT(listen string, bootstrapCSV string) (*DHTService, error) {
 	if listen == "" { // User disabled DHT
 		logger.Log("dht_disabled", nil)
+
 		return nil, nil
 	}
 
@@ -36,6 +38,7 @@ func StartDHT(listen string, bootstrapCSV string) (*DHTService, error) {
 	return &DHTService{Node: dhtNode}, nil
 }
 
+// LookupPeers searches for peers serving the given infoHash.
 func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 	if svc == nil {
 		return nil
@@ -43,7 +46,7 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 
 	const (
 		alpha     = 10 // num of parallel queries
-		maxRounds = 10  // iterative depth
+		maxRounds = 10 // iterative depth
 		maxPeers  = 50 // stop early criteria
 	)
 
@@ -53,11 +56,12 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 	queue := svc.Node.RoutingTable.Closest(infoHash, alpha)
 
 	// START LOGS
-	var dht_addresses []string
-	for _, dht := range queue {
-		dht_addresses = append(dht_addresses, dht.Addr.String())
+	dhtAddresses := make([]string, 0, len(queue))
+	for _, d := range queue {
+		dhtAddresses = append(dhtAddresses, d.Addr.String())
 	}
-	logger.Log("leecher_peers_lookup", map[string]any{"available_dhts": dht_addresses})
+
+	logger.Log("leecher_peers_lookup", map[string]any{"available_dhts": dhtAddresses})
 	// END LOGS
 
 	for round := 0; round < maxRounds && len(queue) > 0 && len(seen) < maxPeers; round++ {
@@ -74,6 +78,7 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 			if _, ok := seen[addr]; ok {
 				continue
 			}
+
 			seen[addr] = struct{}{}
 		}
 	}
@@ -83,14 +88,16 @@ func (svc *DHTService) LookupPeers(infoHash [20]byte) []string {
 	for peer := range seen {
 		out = append(out, peer)
 	}
+
 	return out
 }
 
-// Seeder side
+// Announce tells DHT peers that we serve the given infoHash at tcpAddr.
 func (svc *DHTService) Announce(infoHash [20]byte, tcpAddr string) {
 	if svc == nil {
 		return
 	}
+
 	hexInfoHash := hex.EncodeToString(infoHash[:])
 	svc.Node.Announce(hexInfoHash, tcpAddr)
 }

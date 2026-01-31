@@ -1,15 +1,25 @@
 package tests
 
 import (
-	"github.com/BitTorrentFileSharing/bittorrent/internal/metainfo"
 	"encoding/json"
-	"fmt"
 	"testing"
+
+	"github.com/BitTorrentFileSharing/bittorrent/internal/metainfo"
 )
 
-func TestSome(_ *testing.T) {
+func TestSome(t *testing.T) {
+	t.Parallel()
+
 	m := metainfo.Meta{FileName: "some file name))"}
-	m.Write("abc")
-	bytes, _ := json.Marshal(m)
-	fmt.Println(string(bytes))
+
+	if err := m.Write(t.TempDir() + "/abc"); err != nil {
+		t.Fatal(err)
+	}
+
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Log(string(bytes))
 }

@@ -1,15 +1,16 @@
 package protocol
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"io"
-	"crypto/rand"
 
 	"github.com/BitTorrentFileSharing/bittorrent/internal/storage"
 	"github.com/BitTorrentFileSharing/bittorrent/internal/util"
 )
 
+// Message type constants.
 const (
 	MsgHandshake = iota
 	MsgBitfield
@@ -18,27 +19,28 @@ const (
 	MsgHave
 )
 
-// Handshake payload:
-//
-//	20‑byte infoHash  – SHA‑1(torrent metadata)
-//	20‑byte peerID    – random ASCII string
-//
-// length = 1 (ID) + 20 + 20 = 41
+// HandshakeLen is the length of a handshake message.
+// Handshake payload: 20-byte infoHash + 20-byte peerID.
+// Length = 1 (ID) + 20 + 20 = 41.
 const HandshakeLen = 1 + 20 + 20
 
+// Message represents a protocol message with ID and data payload.
 type Message struct {
 	ID   uint8
 	Data []byte
 }
 
+// NewHandshake creates a new handshake message.
 func NewHandshake(infoHash, peerID []byte) Message {
 	return Message{ID: MsgHandshake, Data: append(infoHash, peerID...)}
 }
 
+// NewBitfield creates a new bitfield message.
 func NewBitfield(bf storage.Bitfield) Message {
 	return Message{ID: MsgBitfield, Data: bf.Bytes()}
 }
 
+// NewRequest creates a new request message for the given piece index.
 func NewRequest(idx int) Message {
 	return Message{
 		ID: MsgRequest,
@@ -49,6 +51,7 @@ func NewRequest(idx int) Message {
 	}
 }
 
+// NewPiece creates a new piece message with the given index and data.
 func NewPiece(idx int, piece []byte) Message {
 	return Message{
 		ID: MsgPiece,
@@ -62,14 +65,15 @@ func NewPiece(idx int, piece []byte) Message {
 	}
 }
 
+// NewHave creates a new have message for the given piece index.
 func NewHave(idx int) Message {
 	return Message{
-		ID: MsgHave,
+		ID:   MsgHave,
 		Data: util.Uint32ToBytes(uint32(idx)),
 	}
 }
 
-// Forms TCP-packet
+// Encode forms a TCP packet and writes it to the given writer.
 func (m *Message) Encode(pipe io.Writer) error {
 	// 1. Write prefix which tells length of message.
 	// 1-byte for ID. N-byte for Data
@@ -82,16 +86,18 @@ func (m *Message) Encode(pipe io.Writer) error {
 	}
 	// 3. writes payload
 	_, err := pipe.Write(m.Data)
+
 	return err
 }
 
-// Decodes message with ID and DATA from reader
+// Decode reads and decodes a message with ID and DATA from the reader.
 func Decode(r io.Reader) (*Message, error) {
 	// 1. Read data length (represented in 4 bytes)
 	var size uint32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
 		return nil, err
 	}
+
 	if size == 0 {
 		return nil, errors.New("invalid message size")
 	}
@@ -100,14 +106,18 @@ func Decode(r io.Reader) (*Message, error) {
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return nil, err
 	}
+
 	return &Message{ID: buf[0], Data: buf[1:]}, nil
 }
 
+// RandomPeerID generates a random 20-byte peer ID.
 func RandomPeerID() [20]byte {
 	var id [20]byte
+
 	_, err := rand.Read(id[:])
 	if err != nil {
 		panic(err)
 	}
+
 	return id
 }

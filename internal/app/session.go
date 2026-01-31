@@ -1,5 +1,4 @@
-// Owns the torrent's in-memory state
-
+// Package app owns the torrent's in-memory state and orchestrates downloads.
 package app
 
 import (
@@ -20,7 +19,7 @@ import (
 	"github.com/BitTorrentFileSharing/bittorrent/internal/util"
 )
 
-// Session owns the live state of a single .bit torrent
+// Session owns the live state of a single .bit torrent.
 type Session struct {
 	// Sync
 	Mu sync.Mutex
@@ -39,8 +38,7 @@ type Session struct {
 	cfg *Config
 }
 
-// Allocates memory buffers, starts the UDP node
-//
+// NewSession allocates memory buffers and starts the UDP node.
 // It does not open any TCP connections or files yet.
 func NewSession(cfg *Config, meta *metainfo.Meta) (*Session, error) {
 	// In-memory buffers for pieces and bitfield
@@ -64,11 +62,13 @@ func NewSession(cfg *Config, meta *metainfo.Meta) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	s.DHT = dhtSvc
+
 	return s, nil
 }
 
-// Seeder path
+// RunSeeder runs the seeder path.
 func (sess *Session) RunSeeder() error {
 	cfg := sess.cfg
 	dataPath := cfg.SeedPath
@@ -83,10 +83,12 @@ func (sess *Session) RunSeeder() error {
 
 	// Load file pieces into RAM
 	logger.Log("piece_cache_load", map[string]any{"file": dataPath})
+
 	pieces, _, err := storage.Split(dataPath, storage.DefaultPiece)
 	if err != nil {
 		return err
 	}
+
 	for i, p := range pieces {
 		// Seeder owns everything
 		sess.Pieces[i] = p
@@ -97,15 +99,19 @@ func (sess *Session) RunSeeder() error {
 	if sess.DHT != nil {
 		infoHash, _ := protocol.InfoHash(metaPath)
 		maxTries := 5
+
 		for range maxTries {
-			var addresses []string = sess.DHT.Node.RoutingTable.CheckAddresses()
+			addresses := sess.DHT.Node.RoutingTable.CheckAddresses()
 			if addresses == nil {
 				logger.Log("seeder did not find DHT yet... try again after 5 sec", nil)
 				time.Sleep(5 * time.Second)
+
 				continue
 			}
+
 			logger.Log("Seeder_announce", map[string]any{"dht": addresses})
 			sess.DHT.Announce(infoHash, cfg.Listen)
+
 			break
 		}
 	}
@@ -122,8 +128,13 @@ func (sess *Session) RunSeeder() error {
 
 	logger.Log(
 		"seeder_ready",
-		map[string]any{"file": dataPath, "tcp": cfg.Listen, "infoHash": hex.EncodeToString(infoHash[:])},
+		map[string]any{
+			"file":     dataPath,
+			"tcp":      cfg.Listen,
+			"infoHash": hex.EncodeToString(infoHash[:]),
+		},
 	)
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -131,6 +142,7 @@ func (sess *Session) RunSeeder() error {
 				"accept_err",
 				map[string]any{"err": err.Error()},
 			)
+
 			continue
 		}
 		// One goroutine per remote peer
@@ -145,20 +157,23 @@ func (sess *Session) RunSeeder() error {
 	}
 }
 
-// Creates .bit file when seeding for the first time.
-// Also fills session meta-related fields if null
+// ensureMeta creates .bit file when seeding for the first time.
+// Also fills session meta-related fields if null.
 func (sess *Session) ensureMeta(dataPath, metaPath string) error {
 	if sess.Meta != nil {
 		return nil
 	}
+
 	if util.Exists(metaPath) {
 		m, err := metainfo.Load(metaPath)
 		if err != nil {
 			return err
 		}
+
 		sess.Meta = m
 		sess.Pieces = make([][]byte, len(m.Hashes))
 		sess.BF = storage.NewBitfield(len(m.Hashes))
+
 		return nil
 	}
 
@@ -167,15 +182,18 @@ func (sess *Session) ensureMeta(dataPath, metaPath string) error {
 	if err != nil {
 		return err
 	}
+
 	meta := &metainfo.Meta{
 		FileName:   filepath.Base(dataPath),
 		FileLength: int64(len(pieces) * storage.DefaultPiece),
 		PieceSize:  storage.DefaultPiece,
 		Hashes:     hashes,
 	}
+
 	if err := meta.Write(metaPath); err != nil {
 		return err
 	}
+
 	logger.Log("meta_write", map[string]any{"file": metaPath})
 	sess.Meta = meta
 
@@ -186,23 +204,21 @@ func (sess *Session) ensureMeta(dataPath, metaPath string) error {
 	return nil
 }
 
-// Helper to wrap peer.New with seeder-specific fields.
+// newPeerAsSeeder is a helper to wrap peer.New with seeder-specific fields.
 func newPeerAsSeeder(c net.Conn, bf storage.Bitfield, id [20]byte,
 	allPieces [][]byte, infoHash [20]byte) *peer.Peer {
-
 	p := peer.New(c, bf, id, infoHash) // Spawn threads btw
 	p.Pieces = allPieces
-	logger.Log("send_handshake", map[string]any{"infoHash": hex.EncodeToString(infoHash[:])})
+	logger.Log("send_handshake", map[string]any{
+		"infoHash": hex.EncodeToString(infoHash[:]),
+	})
 	p.SendCh <- protocol.NewHandshake(infoHash[:], id[:])
 	p.SendCh <- protocol.NewBitfield(bf)
+
 	return p
 }
 
-//
-// Leecher path
-//
-
-// Runs leecher. Will seed after getting a file if specified.
+// RunLeecher runs the leecher. Will seed after getting a file if specified.
 func (sess *Session) RunLeecher() error {
 	cfg := sess.cfg
 
@@ -213,6 +229,7 @@ func (sess *Session) RunLeecher() error {
 			"leecher_load_metainfo_err",
 			map[string]any{"error": err.Error()},
 		)
+
 		return err
 	}
 
@@ -225,21 +242,28 @@ func (sess *Session) RunLeecher() error {
 	if sess.DHT == nil {
 		return errors.New("specify dht")
 	}
+
 	infoHash, _ := protocol.InfoHash(cfg.MetaPath)
 	sess.InfoHash = infoHash
-	logger.Log("leecher", map[string]any{"desired_infoHash": hex.EncodeToString(infoHash[:])})
+	logger.Log("leecher", map[string]any{
+		"desired_infoHash": hex.EncodeToString(infoHash[:]),
+	})
 
 	// Try 100 times to find seeder
 	maxTries := 100
+
 	for range maxTries {
 		peers := sess.DHT.LookupPeers(infoHash)
 		if len(peers) == 0 {
 			time.Sleep(5 * time.Second)
+
 			continue
 		}
+
 		if len(peers) > 0 {
 			cfg.PeersCSV += "," + strings.Join(peers, ",")
 			logger.Log("leecher_bootstrap", map[string]any{"new_peers": peers})
+
 			break
 		}
 	}
@@ -255,6 +279,7 @@ func (sess *Session) RunLeecher() error {
 		if cfg.Listen == ":0" {
 			return errors.New("please, specify exact tcp address in order to seed '-tcp-listen x'")
 		}
+
 		errCh := make(chan error, 1)
 
 		go func() {
@@ -266,7 +291,8 @@ func (sess *Session) RunLeecher() error {
 
 			logger.Log("seeder_ready", map[string]any{
 				"file": strings.TrimSuffix(filepath.Base(cfg.MetaPath), ".bit"),
-				"tcp":  cfg.Listen})
+				"tcp":  cfg.Listen,
+			})
 
 			// 1. Announce itself for known peers
 			sess.DHT.Announce(infoHash, cfg.Listen)
@@ -275,26 +301,31 @@ func (sess *Session) RunLeecher() error {
 			ln, err := net.Listen("tcp", cfg.Listen)
 			if err != nil {
 				errCh <- fmt.Errorf("failed to listen on %s: %w", cfg.Listen, err)
+
 				return
 			}
 
 			// close listener after n sec
 			go func() {
 				<-time.After(time.Duration(cfg.KeepSeedingSec) * time.Second)
-				ln.Close()
+				_ = ln.Close()
 			}()
 
 			for {
 				conn, err := ln.Accept()
 				if err != nil {
 					// Error via closing due time?
-					if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
+					var opErr *net.OpError
+					if errors.As(err, &opErr) &&
+						opErr.Err.Error() == "use of closed network connection" {
 						break
 					}
+
 					logger.Log(
 						"accept_err",
 						map[string]any{"err": err.Error()},
 					)
+
 					continue
 				}
 
@@ -317,13 +348,15 @@ func (sess *Session) RunLeecher() error {
 			return err
 		}
 	}
+
 	return nil
 }
 
-// Saves data & sets bit
-func (s *Session) MarkPiece(idx int, data []byte) {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-	s.Pieces[idx] = data
-	s.BF.Set(idx)
+// MarkPiece saves data and sets the bit for a piece.
+func (sess *Session) MarkPiece(idx int, data []byte) {
+	sess.Mu.Lock()
+	defer sess.Mu.Unlock()
+
+	sess.Pieces[idx] = data
+	sess.BF.Set(idx)
 }

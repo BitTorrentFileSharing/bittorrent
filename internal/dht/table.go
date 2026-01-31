@@ -11,31 +11,35 @@ import (
 	"github.com/BitTorrentFileSharing/bittorrent/internal/logger"
 )
 
-// / Some Helpers below
+// xor computes XOR of two 20-byte arrays.
 func xor(a, b [20]byte) (o [20]byte) {
 	for i := range 20 {
 		o[i] = a[i] ^ b[i]
 	}
+
 	return
 }
 
-// Finds the prefix len of bits from 160bits array
+// prefixLen finds the prefix length of bits from a 160-bit array.
 func prefixLen(id [20]byte) int {
 	for byteIndex := range 20 {
 		if id[byteIndex] == 0 {
 			continue
 		}
+
 		for bitIndex := range 8 {
 			if id[byteIndex]&(0x80>>bitIndex) != 0 {
 				return byteIndex*8 + bitIndex
 			}
 		}
 	}
+
 	return 159
 }
 
 const kSize = 8 // Bucket size
 
+// Peer represents a DHT peer with ID, address, and last seen time.
 type Peer struct {
 	ID   [20]byte
 	Addr *net.UDPAddr
@@ -44,18 +48,20 @@ type Peer struct {
 
 type bucket struct{ peers []Peer }
 
+// Table represents a DHT routing table.
 type Table struct {
 	mu     sync.RWMutex
 	self   [20]byte
 	bucket [160]bucket
 }
 
+// NewTable creates a new routing table with the given self ID.
 func NewTable(self [20]byte) *Table {
 	return &Table{self: self}
 }
 
-// Inserts or Refreshes peer *p* in the appropriate bucket.
-//   - Self-ID is never stored.
+// Update inserts or refreshes peer p in the appropriate bucket.
+// Self-ID is never stored.
 func (t *Table) Update(peer Peer) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -64,7 +70,7 @@ func (t *Table) Update(peer Peer) {
 	if peer.ID == t.self {
 		return
 	}
-	
+
 	bucketIdx := prefixLen(xor(peer.ID, t.self))
 	b := &t.bucket[bucketIdx]
 
@@ -72,6 +78,7 @@ func (t *Table) Update(peer Peer) {
 	for idx, bucketPeer := range b.peers {
 		if bucketPeer.ID == peer.ID {
 			b.peers = slices.Delete(b.peers, idx, idx+1)
+
 			break
 		}
 	}
@@ -93,38 +100,46 @@ func (t *Table) Update(peer Peer) {
 		}
 	}
 
-	logger.Log("RT peers update", map[string]any{"peers": peers, "new_peer": peer.Addr.String(), "new_peer_bucket": bucketIdx})
+	logger.Log("RT peers update", map[string]any{
+		"peers":           peers,
+		"new_peer":        peer.Addr.String(),
+		"new_peer_bucket": bucketIdx,
+	})
 }
 
-/// Query closest
-
+// dist computes the XOR distance between two 20-byte IDs.
 func dist(a, b [20]byte) *big.Int {
 	xorResult := xor(a, b)
+
 	return new(big.Int).SetBytes(xorResult[:])
 }
 
-// Finds closest peer to the target
+// Closest finds the n closest peers to the target.
 func (t *Table) Closest(target [20]byte, n int) []Peer {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	
+
 	candidates := make([]Peer, 0, n*2)
 	for _, b := range t.bucket {
 		candidates = append(candidates, b.peers...)
 	}
+
 	sort.Slice(candidates, func(i, j int) bool {
 		return dist(candidates[i].ID, target).Cmp(dist(candidates[j].ID, target)) < 0
 	})
+
 	// Shorten
 	if len(candidates) > n {
 		candidates = candidates[:n]
 	}
+
 	return candidates
 }
 
-func (table *Table) CheckAddresses() []string {
+// CheckAddresses returns all peer addresses in the routing table.
+func (t *Table) CheckAddresses() []string {
 	var addresses []string
-	for _, bucket := range table.bucket {
+	for _, bucket := range t.bucket {
 		for _, peer := range bucket.peers {
 			addresses = append(addresses, peer.Addr.String())
 		}
@@ -133,13 +148,15 @@ func (table *Table) CheckAddresses() []string {
 	return addresses
 }
 
-func (table *Table) GetNPeers(n int) []*Peer {
+// GetNPeers returns up to n peers from the routing table.
+func (t *Table) GetNPeers(n int) []*Peer {
 	var peers []*Peer
-	for _, bucket := range table.bucket {
+	for _, bucket := range t.bucket {
 		for _, peer := range bucket.peers {
 			if len(peers) >= n {
 				return peers
 			}
+
 			peers = append(peers, &peer)
 		}
 	}
