@@ -34,13 +34,23 @@ func send(conn *net.UDPConn, addr *net.UDPAddr, m Msg) error {
 
 	// Emit a line before the send
 	_, err = conn.WriteToUDP(data, addr)
+	if err != nil {
+		logger.Log("udp_send_error", map[string]any{
+			"to":   addr.String(),
+			"type": m.T,
+			"size": len(data),
+			"err":  err.Error(),
+		})
+		return err
+	}
+
 	logger.Log("udp_send", map[string]any{
 		"to":   addr.String(),
 		"type": m.T,
 		"size": len(data),
 	})
 
-	return err
+	return nil
 }
 
 const udpBufferSize = 1024
