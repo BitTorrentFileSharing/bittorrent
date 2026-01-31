@@ -50,31 +50,31 @@ go build ./cmd/bittorrent # build the single binary
 **DHT‑only node (Terminal 1)**
 
 ```bash
-./bittorrent -dht-listen :10000 -tcp-listen :10001
+./bittorrent -dht-listen 127.0.0.1:10000 -tcp-listen 127.0.0.1:10001
 ```
 
 **Seeder (Terminal 2)**
 
 ```bash
-./bittorrent -seed ~/Movies/big_buck_bunny.mp4 -dht-listen :20000 -tcp-listen :20001 -bootstrap :10000
+./bittorrent -seed ~/Movies/big_buck_bunny.mp4 -dht-listen 127.0.0.1:20000 -tcp-listen 127.0.0.1:20001 -bootstrap 127.0.0.1:10000
 ```
 
 **Leecher → Seeder (Terminal 3)**
 
 ```bash
-./bittorrent -get ~/Movies/big_buck_bunny.mp4.bit -dest ~/Downloads -dht-listen :30000 -tcp-listen :30001 -bootstrap :10000 -keep 1200
+./bittorrent -get ~/Movies/big_buck_bunny.mp4.bit -dest ~/Downloads -dht-listen 127.0.0.1:30000 -tcp-listen 127.0.0.1:30001 -bootstrap 127.0.0.1:10000 -keep 1200
 ```
 
 **Leecher #2 (Terminal 4)**
 
 ```bash
-./bittorrent -get ~/Movies/big_buck_bunny.mp4.bit -dest ~/Downloads -dht-listen :40000 -tcp-listen :40001 -bootstrap :10000
+./bittorrent -get ~/Movies/big_buck_bunny.mp4.bit -dest ~/Downloads -dht-listen 127.0.0.1:40000 -tcp-listen :40001 -bootstrap 127.0.0.1:10000
 ```
 
 Pipe the output of each terminal to [`jq`](https://stedolan.github.io/jq/) for pretty log formatting:
 
 ```bash
-./bittorrent -dht-listen :10000 ... | jq .
+./bittorrent -dht-listen 127.0.0.1:10000 ... | jq .
 ```
 
 ---
