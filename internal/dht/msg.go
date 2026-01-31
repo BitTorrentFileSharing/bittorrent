@@ -41,6 +41,7 @@ func send(conn *net.UDPConn, addr *net.UDPAddr, m Msg) error {
 			"size": len(data),
 			"err":  err.Error(),
 		})
+
 		return err
 	}
 
